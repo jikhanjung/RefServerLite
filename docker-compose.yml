@@ -1,0 +1,23 @@
+services:
+  refserver:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./refdata:/app/refdata
+      - ./logs:/app/logs
+    environment:
+      - PYTHONPATH=/app
+      - LOG_LEVEL=INFO
+      - CHROMA_TELEMETRY_DISABLED=1
+    restart: unless-stopped
+    # healthcheck:
+    #   test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+    #   start_period: 40s
+
+volumes:
+  refdata:
+  logs:

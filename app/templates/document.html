@@ -1,0 +1,496 @@
+{% extends "base.html" %}
+
+{% block title %}{{ paper.filename }} - RefServerLite{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item"><a href="/admin">Documents</a></li>
+                <li class="breadcrumb-item active">{{ paper.filename }}</li>
+            </ol>
+        </nav>
+        
+        <h1 class="mb-4">{{ metadata.title if metadata and metadata.title else paper.filename }}</h1>
+        
+        <!-- Metadata Card -->
+        <div class="card mb-3">
+            <div class="card-header d-flex justify-content-between align-items-center py-2">
+                <h6 class="mb-0">Document Metadata</h6>
+                <button type="button" class="btn btn-sm btn-outline-primary" id="editMetadataBtn">
+                    <i class="bi bi-pencil"></i> Edit
+                </button>
+            </div>
+            <div class="card-body py-2">
+                <!-- View Mode -->
+                <div id="metadataView">
+                    {% if metadata %}
+                    <div class="row">
+                        <div class="col-md-4">
+                            <dl class="mb-0" style="font-size: 0.9em;">
+                                <dt style="font-size: 0.85em;">Title</dt>
+                                <dd id="titleDisplay" class="mb-2">{{ metadata.title or '' }}</dd>
+                                
+                                <dt style="font-size: 0.85em;">Authors</dt>
+                                <dd id="authorsDisplay" class="mb-2">
+                                    {% if metadata.get_authors() %}
+                                        {{ ', '.join(metadata.get_authors()) }}
+                                    {% else %}
+                                        
+                                    {% endif %}
+                                </dd>
+                            </dl>
+                        </div>
+                        <div class="col-md-4">
+                            <dl class="mb-0" style="font-size: 0.9em;">
+                                <dt style="font-size: 0.85em;">Journal</dt>
+                                <dd id="journalDisplay" class="mb-2">{{ metadata.journal or '' }}</dd>
+                                
+                                <dt style="font-size: 0.85em;">Year</dt>
+                                <dd id="yearDisplay" class="mb-2">{{ metadata.year or '' }}</dd>
+                            </dl>
+                        </div>
+                        <div class="col-md-4">
+                            <dl class="mb-0" style="font-size: 0.9em;">
+                                <dt style="font-size: 0.85em;">DOI</dt>
+                                <dd id="doiDisplay" class="mb-2">{{ metadata.doi or '' }}</dd>
+                                
+                                <dt style="font-size: 0.85em;">Abstract</dt>
+                                <dd id="abstractDisplay" class="mb-0" style="max-height: 60px; overflow-y: auto; font-size: 0.8em;">{{ metadata.abstract or '' }}</dd>
+                            </dl>
+                        </div>
+                    </div>
+                    {% else %}
+                    <p class="text-muted mb-0">No metadata extracted yet.</p>
+                    {% endif %}
+                </div>
+                        
+                        <!-- Edit Mode -->
+                        <div id="metadataEdit" style="display: none;">
+                            <form id="metadataForm">
+                                <div class="row">
+                                    <div class="col-md-6 mb-3">
+                                        <label for="titleInput" class="form-label">Title</label>
+                                        <input type="text" class="form-control" id="titleInput" value="{{ metadata.title if metadata else '' }}">
+                                    </div>
+                                    <div class="col-md-6 mb-3">
+                                        <label for="yearInput" class="form-label">Year</label>
+                                        <input type="number" class="form-control" id="yearInput" value="{{ metadata.year if metadata else '' }}">
+                                    </div>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="authorsInput" class="form-label">Authors (comma-separated)</label>
+                                    <input type="text" class="form-control" id="authorsInput" 
+                                           value="{% if metadata and metadata.get_authors() %}{{ ', '.join(metadata.get_authors()) }}{% endif %}">
+                                </div>
+                                <div class="row">
+                                    <div class="col-md-6 mb-3">
+                                        <label for="journalInput" class="form-label">Journal</label>
+                                        <input type="text" class="form-control" id="journalInput" value="{{ metadata.journal if metadata else '' }}">
+                                    </div>
+                                    <div class="col-md-6 mb-3">
+                                        <label for="doiInput" class="form-label">DOI</label>
+                                        <input type="text" class="form-control" id="doiInput" value="{{ metadata.doi if metadata else '' }}">
+                                    </div>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="abstractInput" class="form-label">Abstract</label>
+                                    <textarea class="form-control" id="abstractInput" rows="4">{{ metadata.abstract if metadata else '' }}</textarea>
+                                </div>
+                                <div class="d-flex gap-2">
+                                    <button type="submit" class="btn btn-success">
+                                        <i class="bi bi-check"></i> Save
+                                    </button>
+                                    <button type="button" class="btn btn-secondary" id="cancelEditBtn">
+                                        <i class="bi bi-x"></i> Cancel
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Document Details and Processing History Row -->
+        <div class="row mb-3">
+            <div class="col-md-6">
+                <!-- Document Details Card -->
+                <div class="card">
+                    <div class="card-header py-2">
+                        <h6 class="mb-0">Document Details</h6>
+                    </div>
+                    <div class="card-body py-2">
+                        <div class="row" style="font-size: 0.85em;">
+                            <div class="col-6">
+                                <strong>Document ID:</strong><br>
+                                <code style="font-size: 0.8em;">{{ paper.doc_id }}</code>
+                            </div>
+                            <div class="col-6">
+                                <strong>Filename:</strong><br>
+                                <span>{{ paper.filename }}</span>
+                            </div>
+                        </div>
+                        <div class="row mt-2" style="font-size: 0.85em;">
+                            <div class="col-6">
+                                <strong>Uploaded:</strong><br>
+                                {{ paper.created_at.strftime('%Y-%m-%d %H:%M') }}
+                            </div>
+                            <div class="col-6">
+                                <strong>Updated:</strong><br>
+                                {{ paper.updated_at.strftime('%Y-%m-%d %H:%M') }}
+                            </div>
+                        </div>
+                        <div class="mt-3">
+                            <a href="/download/pdf/{{ paper.doc_id }}" class="btn btn-primary btn-sm">
+                                <i class="bi bi-download"></i> Download PDF
+                            </a>
+                        </div>
+                        
+                        <!-- Document Embedding Section -->
+                        {% if document_embedding %}
+                        <div class="mt-3">
+                            <div class="card bg-light">
+                                <div class="card-body py-2">
+                                    <h6 class="mb-2" style="font-size: 0.85em; color: #666;">
+                                        <i class="bi bi-cpu"></i> Document Embedding (first 10 values)
+                                    </h6>
+                                    <div class="d-flex align-items-center gap-2">
+                                        <div class="embedding-values" style="font-family: monospace; font-size: 0.75em; color: #444; line-height: 1.3; flex-grow: 1;">
+                                            [{% for value in document_embedding %}{{ "%.4f"|format(value) }}{% if not loop.last %}, {% endif %}{% endfor %}]
+                                        </div>
+                                        <div class="embedding-heatmap" style="flex-shrink: 0;">
+                                            <img src="/api/v1/document/{{ paper.doc_id }}/embedding_heatmap_mini" 
+                                                 alt="Document Embedding Heatmap" 
+                                                 style="width: 100px; height: 100px; border: 1px solid #ddd; border-radius: 4px; image-rendering: pixelated;"
+                                                 loading="lazy"
+                                                 onerror="this.style.display='none'">
+                                        </div>
+                                    </div>
+                                    <small class="text-muted" style="font-size: 0.7em;">Averaged from all page embeddings</small>
+                                </div>
+                            </div>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            
+            <div class="col-md-6">
+                <!-- Processing History Card -->
+                <div class="card">
+                    <div class="card-header py-2">
+                        <h6 class="mb-0">Processing History</h6>
+                    </div>
+                    <div class="card-body py-2">
+                        {% if jobs %}
+                        <div class="list-group list-group-flush">
+                            {% for job in jobs %}
+                            <div class="list-group-item px-0 py-1" style="font-size: 0.85em;">
+                                <div class="d-flex justify-content-between align-items-start">
+                                    <div>
+                                        <span class="badge bg-{% if job.status == 'completed' %}success{% elif job.status == 'processing' %}warning{% elif job.status == 'failed' %}danger{% else %}secondary{% endif %} me-2">{{ job.status }}</span>
+                                        <small>{{ job.job_id[:8] }}...</small>
+                                        {% if job.current_step %}
+                                        <br><small class="text-muted">Step: {{ job.current_step }}</small>
+                                        {% endif %}
+                                        {% if job.error_message %}
+                                        <br><small class="text-danger">{{ job.error_message }}</small>
+                                        {% endif %}
+                                    </div>
+                                    <small class="text-muted">{{ job.created_at.strftime('%m-%d %H:%M') }}</small>
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                        {% else %}
+                        <p class="text-muted mb-0" style="font-size: 0.85em;">No processing history.</p>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Document Pages Row -->
+        <div class="row">
+            <div class="col-12">
+                <!-- Page Navigation and Content -->
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">Document Pages</h5>
+                        {% if page_texts %}
+                        <div class="d-flex align-items-center gap-3">
+                            <span class="text-muted" id="pageInfo">Page 1 of {{ page_texts|length }}</span>
+                            <div class="btn-group">
+                                <button type="button" class="btn btn-outline-secondary btn-sm" id="prevPageBtn" disabled>
+                                    <i class="bi bi-chevron-left"></i> Previous
+                                </button>
+                                <button type="button" class="btn btn-outline-secondary btn-sm" id="nextPageBtn">
+                                    Next <i class="bi bi-chevron-right"></i>
+                                </button>
+                            </div>
+                        </div>
+                        {% endif %}
+                    </div>
+                    <div class="card-body">
+                        {% if page_texts %}
+                        <div id="pageContainer">
+                            {% for page_text in page_texts %}
+                            <div class="page-section" id="page-{{ page_text.page_number }}" style="{% if page_text.page_number != 1 %}display: none;{% endif %}">
+                                <div class="row">
+                                    <div class="col-lg-7">
+                                        <!-- Page Preview -->
+                                        <div class="page-preview mb-3">
+                                            <img src="/preview/{{ paper.doc_id }}/{{ page_text.page_number }}" 
+                                                 class="img-fluid border rounded" 
+                                                 loading="lazy"
+                                                 alt="Page {{ page_text.page_number }} preview"
+                                                 style="max-height: 800px; width: 100%; object-fit: contain; cursor: zoom-in;"
+                                                 onclick="toggleImageZoom(this)">
+                                        </div>
+                                    </div>
+                                    <div class="col-lg-5">
+                                        <!-- Page Text -->
+                                        <div class="page-text">
+                                            <h6 class="border-bottom pb-2 mb-3">Page {{ page_text.page_number }} Text</h6>
+                                            <div class="border rounded p-3" style="height: 800px; overflow-y: auto; background-color: #f8f9fa;">
+                                                {% if page_text.text %}
+                                                <pre class="mb-0" style="white-space: pre-wrap; font-size: 0.95em; line-height: 1.4;">{{ page_text.text }}</pre>
+                                                {% else %}
+                                                <p class="text-muted mb-0"><em>No text extracted for this page</em></p>
+                                                {% endif %}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <!-- Page Embedding Section -->
+                                {% if page_embeddings.get(page_text.page_number) %}
+                                <div class="row mt-3">
+                                    <div class="col-12">
+                                        <div class="card bg-light">
+                                            <div class="card-body py-2">
+                                                <h6 class="mb-2" style="font-size: 0.9em; color: #666;">
+                                                    <i class="bi bi-cpu"></i> Page Embedding (first 10 values)
+                                                </h6>
+                                                <div class="d-flex align-items-center gap-2">
+                                                    <div class="embedding-values" style="font-family: monospace; font-size: 0.8em; color: #444; flex-grow: 1;">
+                                                        [{% for value in page_embeddings[page_text.page_number] %}{{ "%.4f"|format(value) }}{% if not loop.last %}, {% endif %}{% endfor %}]
+                                                    </div>
+                                                    <div class="embedding-heatmap" style="flex-shrink: 0;">
+                                                        <img src="/api/v1/document/{{ paper.doc_id }}/page/{{ page_text.page_number }}/embedding_heatmap_mini" 
+                                                             alt="Page {{ page_text.page_number }} Embedding Heatmap" 
+                                                             style="width: 100px; height: 100px; border: 1px solid #ddd; border-radius: 4px; image-rendering: pixelated;"
+                                                             loading="lazy"
+                                                             onerror="this.style.display='none'">
+                                                    </div>
+                                                </div>
+                                                <small class="text-muted">Vector dimension: 1024 (BGE-M3 model)</small>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                {% endif %}
+                            </div>
+                            {% endfor %}
+                        </div>
+                        {% else %}
+                        <p class="text-muted mb-0">No page content available. The document may still be processing.</p>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+
+<script>
+// Global variables for page navigation
+let currentPage = 1;
+let totalPages = 0;
+
+// Metadata editing functionality
+document.addEventListener('DOMContentLoaded', function() {
+    const editBtn = document.getElementById('editMetadataBtn');
+    const cancelBtn = document.getElementById('cancelEditBtn');
+    const metadataView = document.getElementById('metadataView');
+    const metadataEdit = document.getElementById('metadataEdit');
+    const metadataForm = document.getElementById('metadataForm');
+    
+    // Initialize page navigation
+    initPageNavigation();
+
+    // Toggle to edit mode
+    editBtn.addEventListener('click', function() {
+        metadataView.style.display = 'none';
+        metadataEdit.style.display = 'block';
+        editBtn.style.display = 'none';
+    });
+
+    // Cancel editing
+    cancelBtn.addEventListener('click', function() {
+        metadataView.style.display = 'block';
+        metadataEdit.style.display = 'none';
+        editBtn.style.display = 'inline-block';
+    });
+
+    // Handle form submission
+    metadataForm.addEventListener('submit', async function(e) {
+        e.preventDefault();
+        
+        // Prepare form data
+        const formData = new FormData();
+        formData.append('title', document.getElementById('titleInput').value);
+        formData.append('authors', document.getElementById('authorsInput').value);
+        formData.append('journal', document.getElementById('journalInput').value);
+        formData.append('year', document.getElementById('yearInput').value);
+        formData.append('abstract', document.getElementById('abstractInput').value);
+        formData.append('doi', document.getElementById('doiInput').value);
+
+        try {
+            // Send update request
+            const response = await fetch(`/api/v1/document/{{ paper.doc_id }}/metadata`, {
+                method: 'POST',
+                body: formData
+            });
+
+            const result = await response.json();
+
+            if (response.ok) {
+                // Show success message briefly then reload
+                showMessage('Metadata updated successfully! Reloading...', 'success');
+                
+                // Reload the page after a short delay to show the success message
+                setTimeout(() => {
+                    window.location.reload();
+                }, 1000);
+            } else {
+                showMessage('Error: ' + result.detail, 'error');
+            }
+        } catch (error) {
+            showMessage('Error: ' + error.message, 'error');
+        }
+    });
+
+    function updateDisplayValues(metadata) {
+        document.getElementById('titleDisplay').textContent = metadata.title || '';
+        document.getElementById('authorsDisplay').textContent = 
+            metadata.authors && metadata.authors.length > 0 ? metadata.authors.join(', ') : '';
+        document.getElementById('journalDisplay').textContent = metadata.journal || '';
+        document.getElementById('yearDisplay').textContent = metadata.year || '';
+        document.getElementById('doiDisplay').textContent = metadata.doi || '';
+        document.getElementById('abstractDisplay').textContent = metadata.abstract || '';
+    }
+
+    function showMessage(message, type) {
+        // Create alert element
+        const alertDiv = document.createElement('div');
+        alertDiv.className = `alert alert-${type === 'success' ? 'success' : 'danger'} alert-dismissible fade show`;
+        alertDiv.innerHTML = `
+            ${message}
+            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        `;
+        
+        // Insert at top of metadata card body
+        const cardBody = document.querySelector('.card-body');
+        cardBody.insertBefore(alertDiv, cardBody.firstChild);
+        
+        // Auto-remove after 3 seconds
+        setTimeout(() => {
+            if (alertDiv.parentNode) {
+                alertDiv.remove();
+            }
+        }, 3000);
+    }
+
+    // Page navigation functions
+    function initPageNavigation() {
+        const pageContainer = document.getElementById('pageContainer');
+        if (!pageContainer) return;
+        
+        const pages = pageContainer.querySelectorAll('.page-section');
+        totalPages = pages.length;
+        
+        if (totalPages <= 1) return;
+        
+        const prevBtn = document.getElementById('prevPageBtn');
+        const nextBtn = document.getElementById('nextPageBtn');
+        const pageInfo = document.getElementById('pageInfo');
+        
+        if (prevBtn && nextBtn) {
+            prevBtn.addEventListener('click', () => {
+                if (currentPage > 1) {
+                    showPage(currentPage - 1);
+                }
+            });
+            
+            nextBtn.addEventListener('click', () => {
+                if (currentPage < totalPages) {
+                    showPage(currentPage + 1);
+                }
+            });
+        }
+        
+        // Initialize first page
+        showPage(1);
+    }
+    
+    function showPage(pageNum) {
+        const pages = document.querySelectorAll('.page-section');
+        const prevBtn = document.getElementById('prevPageBtn');
+        const nextBtn = document.getElementById('nextPageBtn');
+        const pageInfo = document.getElementById('pageInfo');
+        
+        // Hide all pages
+        pages.forEach(page => {
+            page.style.display = 'none';
+        });
+        
+        // Show current page
+        const currentPageElement = document.getElementById(`page-${pageNum}`);
+        if (currentPageElement) {
+            currentPageElement.style.display = 'block';
+            currentPage = pageNum;
+            
+            // Update navigation
+            if (prevBtn) prevBtn.disabled = (currentPage <= 1);
+            if (nextBtn) nextBtn.disabled = (currentPage >= totalPages);
+            if (pageInfo) pageInfo.textContent = `Page ${currentPage} of ${totalPages}`;
+        }
+    }
+    
+    // Global function for image zoom
+    window.toggleImageZoom = function(img) {
+        if (img.style.position === 'fixed') {
+            // Zoom out - reset all styles to original state
+            img.style.position = '';
+            img.style.top = '';
+            img.style.left = '';
+            img.style.transform = '';
+            img.style.width = '100%';
+            img.style.height = '';
+            img.style.maxHeight = '800px';
+            img.style.zIndex = '';
+            img.style.backgroundColor = '';
+            img.style.cursor = 'zoom-in';
+            document.body.style.overflow = '';
+        } else {
+            // Zoom in
+            img.style.position = 'fixed';
+            img.style.top = '50%';
+            img.style.left = '50%';
+            img.style.transform = 'translate(-50%, -50%)';
+            img.style.width = 'auto';
+            img.style.height = '90vh';
+            img.style.maxHeight = 'none';
+            img.style.zIndex = '9999';
+            img.style.backgroundColor = 'rgba(0,0,0,0.8)';
+            img.style.cursor = 'zoom-out';
+            document.body.style.overflow = 'hidden';
+        }
+    };
+});
+</script>
+{% endblock %}

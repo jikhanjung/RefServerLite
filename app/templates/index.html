@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+
+{% block title %}Upload PDF - RefServerLite{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-8 mx-auto">
+        <h1 class="mb-4">Upload PDF Document</h1>
+        
+        <div class="card">
+            <div class="card-body">
+                <form id="uploadForm" enctype="multipart/form-data">
+                    <div class="mb-3">
+                        <label for="pdfFile" class="form-label">Select PDF File</label>
+                        <input type="file" class="form-control" id="pdfFile" accept=".pdf" required>
+                        <div class="form-text">Only PDF files are accepted</div>
+                    </div>
+                    
+                    <button type="submit" class="btn btn-primary" id="uploadBtn">
+                        <span class="spinner-border spinner-border-sm d-none" id="uploadSpinner"></span>
+                        Upload and Process
+                    </button>
+                </form>
+                
+                <div id="uploadResult" class="mt-3"></div>
+            </div>
+        </div>
+        
+        <div class="card mt-4" id="jobStatus" style="display: none;">
+            <div class="card-body">
+                <h5 class="card-title">Processing Status</h5>
+                <div class="mb-3">
+                    <div class="d-flex justify-content-between mb-1">
+                        <span>Progress</span>
+                        <span id="progressPercentage">0%</span>
+                    </div>
+                    <div class="progress">
+                        <div class="progress-bar" id="progressBar" style="width: 0%"></div>
+                    </div>
+                </div>
+                <p class="mb-1"><strong>Status:</strong> <span id="statusText">Uploading...</span></p>
+                <p class="mb-0"><strong>Current Step:</strong> <span id="currentStep">-</span></p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    
+    const fileInput = document.getElementById('pdfFile');
+    const file = fileInput.files[0];
+    
+    if (!file) {
+        alert('Please select a file');
+        return;
+    }
+    
+    const uploadBtn = document.getElementById('uploadBtn');
+    const uploadSpinner = document.getElementById('uploadSpinner');
+    const uploadResult = document.getElementById('uploadResult');
+    const jobStatus = document.getElementById('jobStatus');
+    
+    // Disable form and show spinner
+    uploadBtn.disabled = true;
+    uploadSpinner.classList.remove('d-none');
+    uploadResult.innerHTML = '';
+    
+    try {
+        // Upload file
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        const response = await fetch('/api/v1/upload', {
+            method: 'POST',
+            body: formData
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok) {
+            uploadResult.innerHTML = `
+                <div class="alert alert-success">
+                    ${data.message}
+                </div>
+            `;
+            
+            // Show job status and start polling
+            jobStatus.style.display = 'block';
+            pollJobStatus(data.job_id);
+        } else {
+            uploadResult.innerHTML = `
+                <div class="alert alert-danger">
+                    Error: ${data.detail}
+                </div>
+            `;
+        }
+    } catch (error) {
+        uploadResult.innerHTML = `
+            <div class="alert alert-danger">
+                Error: ${error.message}
+            </div>
+        `;
+    } finally {
+        uploadBtn.disabled = false;
+        uploadSpinner.classList.add('d-none');
+        fileInput.value = '';
+    }
+});
+
+async function pollJobStatus(jobId) {
+    const statusText = document.getElementById('statusText');
+    const currentStep = document.getElementById('currentStep');
+    const progressBar = document.getElementById('progressBar');
+    const progressPercentage = document.getElementById('progressPercentage');
+    
+    const pollInterval = setInterval(async () => {
+        try {
+            const response = await fetch(`/api/v1/job/${jobId}`);
+            const data = await response.json();
+            
+            if (response.ok) {
+                statusText.textContent = data.status;
+                currentStep.textContent = data.current_step || '-';
+                progressBar.style.width = `${data.progress_percentage}%`;
+                progressPercentage.textContent = `${data.progress_percentage}%`;
+                
+                if (data.status === 'completed') {
+                    clearInterval(pollInterval);
+                    statusText.innerHTML = '<span class="text-success">Completed</span>';
+                    
+                    // Add link to view document
+                    const uploadResult = document.getElementById('uploadResult');
+                    uploadResult.innerHTML += `
+                        <div class="alert alert-info mt-3">
+                            Processing completed! 
+                            <a href="/admin/document/${data.result.doc_id}" class="alert-link">View Document</a>
+                        </div>
+                    `;
+                } else if (data.status === 'failed') {
+                    clearInterval(pollInterval);
+                    statusText.innerHTML = '<span class="text-danger">Failed</span>';
+                    
+                    const uploadResult = document.getElementById('uploadResult');
+                    uploadResult.innerHTML += `
+                        <div class="alert alert-danger mt-3">
+                            Processing failed: ${data.error || 'Unknown error'}
+                        </div>
+                    `;
+                }
+            }
+        } catch (error) {
+            console.error('Error polling job status:', error);
+        }
+    }, 2000); // Poll every 2 seconds
+}
+</script>
+{% endblock %}

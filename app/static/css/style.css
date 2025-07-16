@@ -1,0 +1,57 @@
+/* Custom styles for RefServerLite */
+
+body {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+main {
+    flex: 1;
+}
+
+.footer {
+    margin-top: auto;
+}
+
+/* Document text content */
+.text-content pre {
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    font-size: 0.875rem;
+}
+
+/* Progress bar animation */
+.progress-bar {
+    transition: width 0.3s ease;
+}
+
+/* Search results */
+.list-group-item-action:hover {
+    background-color: #f8f9fa;
+}
+
+/* Table improvements */
+.table th {
+    border-top: none;
+    font-weight: 600;
+}
+
+/* Badge colors */
+.badge {
+    padding: 0.35em 0.65em;
+}
+
+/* Code blocks */
+code {
+    padding: 0.2em 0.4em;
+    background-color: #f8f9fa;
+    border-radius: 3px;
+}
+
+/* Spinner in buttons */
+.spinner-border-sm {
+    width: 1rem;
+    height: 1rem;
+    margin-right: 0.5rem;
+}
