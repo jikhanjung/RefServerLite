@@ -22,12 +22,21 @@
                     <div class="col-md-6">
                         <input type="text" class="form-control" id="searchQuery" placeholder="Search documents...">
                     </div>
-                    <div class="col-md-3">
+                    <div class="col-md-2">
                         <select class="form-select" id="searchType">
-                            <option value="keyword">Keyword Search</option>
-                            <option value="semantic">Semantic Search</option>
+                            <option value="keyword">Keyword</option>
+                            <option value="semantic">Semantic</option>
                         </select>
                     </div>
+                    <div class="col-md-2">
+                        <select class="form-select" id="searchScope" style="display:none;">
+                            <option value="pages">Pages</option>
+                            <option value="chunks">Chunks</option>
+                            <option value="documents">Documents</option>
+                            <option value="all">All Levels</option>
+                        </select>
+                    </div>
+                    <div class="col-md-1"></div>
                     <div class="col-md-3">
                         <button type="submit" class="btn btn-primary w-100">Search</button>
                     </div>
@@ -93,6 +102,10 @@
                                                 <span class="badge bg-secondary me-2" id="embedding-badge-{{ doc.doc_id }}">Embed</span>
                                                 <button class="btn btn-xs btn-outline-primary" id="embedding-retry-{{ doc.doc_id }}" style="display: none;" data-job-id="{{ doc.job_id or '' }}" onclick="retryStep(this.dataset.jobId, 'embedding')">Retry</button>
                                             </div>
+                                            <div class="d-flex align-items-center">
+                                                <span class="badge bg-secondary me-2" id="chunking-badge-{{ doc.doc_id }}">Chunk</span>
+                                                <button class="btn btn-xs btn-outline-success" id="chunking-apply-{{ doc.doc_id }}" data-doc-id="{{ doc.doc_id }}" onclick="applyChunking(this.dataset.docId)">Apply</button>
+                                            </div>
                                         </div>
                                     </div>
                                 </td>
@@ -126,11 +139,21 @@
 
 <script>
 // Search functionality
+document.getElementById('searchType').addEventListener('change', function() {
+    const searchScope = document.getElementById('searchScope');
+    if (this.value === 'semantic') {
+        searchScope.style.display = 'block';
+    } else {
+        searchScope.style.display = 'none';
+    }
+});
+
 document.getElementById('searchForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     
     const query = document.getElementById('searchQuery').value.trim();
     const type = document.getElementById('searchType').value;
+    const scope = document.getElementById('searchScope').value;
     const resultsDiv = document.getElementById('searchResults');
     
     if (!query) {
@@ -141,7 +164,12 @@ document.getElementById('searchForm').addEventListener('submit', async (e) => {
     resultsDiv.innerHTML = '<div class="text-center"><div class="spinner-border"></div></div>';
     
     try {
-        const response = await fetch(`/api/v1/search?q=${encodeURIComponent(query)}&type=${type}`);
+        let url = `/api/v1/search?q=${encodeURIComponent(query)}&type=${type}`;
+        if (type === 'semantic') {
+            url += `&search_scope=${scope}`;
+        }
+        
+        const response = await fetch(url);
         const data = await response.json();
         
         if (response.ok) {
@@ -279,10 +307,93 @@ async function retryStep(jobId, step) {
     }
 }
 
+// Apply chunking function
+async function applyChunking(docId) {
+    try {
+        const button = document.getElementById(`chunking-apply-${docId}`);
+        const badge = document.getElementById(`chunking-badge-${docId}`);
+        
+        // Update UI to show processing
+        button.textContent = 'Processing...';
+        button.disabled = true;
+        badge.className = 'badge bg-warning me-2';
+        
+        const response = await fetch(`/api/v1/admin/apply-chunking/${docId}`, {
+            method: 'POST'
+        });
+        
+        if (response.ok) {
+            const result = await response.json();
+            alert(result.message);
+            
+            // Update UI to show success
+            badge.className = 'badge bg-success me-2';
+            button.textContent = 'Applied';
+            button.disabled = false;
+            
+            updateProgress(); // Refresh the display
+        } else {
+            const error = await response.json();
+            alert(`Error: ${error.detail}`);
+            
+            // Reset UI on error
+            badge.className = 'badge bg-secondary me-2';
+            button.textContent = 'Apply';
+            button.disabled = false;
+        }
+    } catch (error) {
+        alert(`Error: ${error.message}`);
+        
+        // Reset UI on error
+        const button = document.getElementById(`chunking-apply-${docId}`);
+        const badge = document.getElementById(`chunking-badge-${docId}`);
+        badge.className = 'badge bg-secondary me-2';
+        button.textContent = 'Apply';
+        button.disabled = false;
+    }
+}
+
+// Check chunking status and update UI
+async function updateChunkingStatus() {
+    try {
+        const response = await fetch('/api/v1/admin/chunking-status');
+        if (response.ok) {
+            const data = await response.json();
+            
+            data.documents.forEach(doc => {
+                const badge = document.getElementById(`chunking-badge-${doc.doc_id}`);
+                const button = document.getElementById(`chunking-apply-${doc.doc_id}`);
+                
+                if (badge && button) {
+                    if (doc.has_chunks) {
+                        badge.className = 'badge bg-success me-2';
+                        badge.title = `${doc.chunk_count} chunks`;
+                        button.textContent = 'Reapply';
+                        button.className = 'btn btn-xs btn-outline-warning';
+                    } else {
+                        badge.className = 'badge bg-secondary me-2';
+                        badge.title = 'No chunks';
+                        button.textContent = 'Apply';
+                        button.className = 'btn btn-xs btn-outline-success';
+                    }
+                }
+            });
+        }
+    } catch (error) {
+        console.error('Error updating chunking status:', error);
+    }
+}
+
 // Update progress every 3 seconds
 setInterval(updateProgress, 3000);
 
-// Initial progress update
-document.addEventListener('DOMContentLoaded', updateProgress);
+// Update chunking status every 10 seconds
+setInterval(updateChunkingStatus, 10000);
+
+// Initial updates
+document.addEventListener('DOMContentLoaded', () => {
+    updateProgress();
+    updateChunkingStatus();
+});
 </script>
 {% endblock %}

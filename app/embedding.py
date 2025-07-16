@@ -1,8 +1,10 @@
 from sentence_transformers import SentenceTransformer
 import numpy as np
 import logging
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict
 import torch
+import uuid
+from .models import SemanticChunk, Paper
 
 logger = logging.getLogger(__name__)
 
@@ -271,3 +273,188 @@ def generate_embeddings_for_pages(page_texts: List[str]) -> Tuple[List[Tuple[int
     page_embeddings, doc_embedding, model_name = generator.generate_embeddings_for_pages_and_document(page_texts)
     
     return page_embeddings, doc_embedding, model_name
+
+def embed_and_store_semantic_chunks(paper_id: str, chunks: List[Dict], chroma_client, chroma_collection) -> List[str]:
+    """
+    Generate embeddings for semantic chunks and store them in ChromaDB and SQLite
+    
+    Args:
+        paper_id: Paper document ID
+        chunks: List of chunk dictionaries from create_semantic_chunks()
+        chroma_client: ChromaDB client
+        chroma_collection: ChromaDB collection
+        
+    Returns:
+        List of chunk embedding IDs that were successfully stored
+    """
+    if not chunks:
+        logger.warning(f"No chunks provided for paper {paper_id}")
+        return []
+    
+    logger.info(f"Processing {len(chunks)} semantic chunks for paper {paper_id}")
+    
+    try:
+        # Get the paper object
+        paper = Paper.get(Paper.doc_id == paper_id)
+    except Paper.DoesNotExist:
+        logger.error(f"Paper {paper_id} not found")
+        return []
+    
+    generator = get_embedding_generator()
+    
+    # Prepare batch data
+    chunk_texts = [chunk['text'] for chunk in chunks]
+    chunk_ids = []
+    chunk_metadatas = []
+    successful_chunk_ids = []
+    
+    # Generate unique IDs for each chunk
+    for i, chunk in enumerate(chunks):
+        chunk_id = f"{paper_id}_chunk_{chunk['page_number']}_{chunk['chunk_index_on_page']}_{uuid.uuid4().hex[:8]}"
+        chunk_ids.append(chunk_id)
+        
+        # Prepare metadata for ChromaDB
+        metadata = {
+            'paper_id': paper_id,
+            'page_number': chunk['page_number'],
+            'chunk_index_on_page': chunk['chunk_index_on_page'],
+            'chunk_type': chunk['chunk_type'],
+            'text_length': len(chunk['text'])
+        }
+        chunk_metadatas.append(metadata)
+    
+    try:
+        # Generate embeddings in batch for efficiency
+        logger.info(f"Generating embeddings for {len(chunk_texts)} chunks...")
+        embeddings = generator.generate_embeddings_batch(chunk_texts, batch_size=16)
+        
+        if len(embeddings) != len(chunks):
+            logger.error(f"Embedding count mismatch: {len(embeddings)} != {len(chunks)}")
+            return []
+        
+        # Store embeddings in ChromaDB
+        logger.info(f"Storing embeddings in ChromaDB...")
+        chroma_collection.add(
+            embeddings=embeddings.tolist(),
+            documents=chunk_texts,
+            metadatas=chunk_metadatas,
+            ids=chunk_ids
+        )
+        
+        # Store chunk metadata in SQLite
+        logger.info(f"Storing chunk metadata in SQLite...")
+        for i, (chunk, chunk_id) in enumerate(zip(chunks, chunk_ids)):
+            try:
+                # Create SemanticChunk record
+                semantic_chunk = SemanticChunk(
+                    paper=paper,
+                    text=chunk['text'],
+                    page_number=chunk['page_number'],
+                    chunk_index_on_page=chunk['chunk_index_on_page'],
+                    chunk_type=chunk['chunk_type'],
+                    start_char=chunk.get('start_char'),
+                    end_char=chunk.get('end_char'),
+                    embedding_id=chunk_id
+                )
+                
+                # Set bounding box if available
+                if 'bbox' in chunk and chunk['bbox']:
+                    semantic_chunk.set_bbox(chunk['bbox'])
+                
+                semantic_chunk.save()
+                successful_chunk_ids.append(chunk_id)
+                
+            except Exception as e:
+                logger.error(f"Failed to save chunk {i} metadata: {str(e)}")
+                # Don't fail the entire process for one chunk
+                continue
+        
+        logger.info(f"Successfully stored {len(successful_chunk_ids)} semantic chunks for paper {paper_id}")
+        return successful_chunk_ids
+        
+    except Exception as e:
+        logger.error(f"Failed to process semantic chunks for paper {paper_id}: {str(e)}")
+        # Try to clean up any partial data
+        try:
+            # Remove from ChromaDB if any were added
+            existing_ids = []
+            for chunk_id in chunk_ids:
+                try:
+                    result = chroma_collection.get(ids=[chunk_id])
+                    if result['ids']:
+                        existing_ids.append(chunk_id)
+                except:
+                    pass
+            
+            if existing_ids:
+                chroma_collection.delete(ids=existing_ids)
+                logger.info(f"Cleaned up {len(existing_ids)} embeddings from ChromaDB")
+                
+            # Remove from SQLite if any were added
+            deleted_count = SemanticChunk.delete().where(
+                SemanticChunk.paper == paper,
+                SemanticChunk.embedding_id.in_(chunk_ids)
+            ).execute()
+            
+            if deleted_count > 0:
+                logger.info(f"Cleaned up {deleted_count} chunk records from SQLite")
+                
+        except Exception as cleanup_error:
+            logger.error(f"Failed to clean up after chunk processing error: {str(cleanup_error)}")
+        
+        raise
+
+def get_semantic_chunks_for_paper(paper_id: str) -> List[SemanticChunk]:
+    """
+    Get all semantic chunks for a paper
+    """
+    try:
+        paper = Paper.get(Paper.doc_id == paper_id)
+        chunks = list(SemanticChunk.select().where(SemanticChunk.paper == paper).order_by(
+            SemanticChunk.page_number,
+            SemanticChunk.chunk_index_on_page
+        ))
+        return chunks
+    except Paper.DoesNotExist:
+        logger.error(f"Paper {paper_id} not found")
+        return []
+    except Exception as e:
+        logger.error(f"Failed to get semantic chunks for paper {paper_id}: {str(e)}")
+        return []
+
+def delete_semantic_chunks_for_paper(paper_id: str, chroma_collection) -> int:
+    """
+    Delete all semantic chunks for a paper from both ChromaDB and SQLite
+    
+    Returns:
+        Number of chunks deleted
+    """
+    try:
+        paper = Paper.get(Paper.doc_id == paper_id)
+        
+        # Get all chunk embedding IDs
+        chunks = list(SemanticChunk.select().where(SemanticChunk.paper == paper))
+        embedding_ids = [chunk.embedding_id for chunk in chunks]
+        
+        deleted_count = 0
+        
+        # Delete from ChromaDB
+        if embedding_ids:
+            try:
+                chroma_collection.delete(ids=embedding_ids)
+                logger.info(f"Deleted {len(embedding_ids)} embeddings from ChromaDB")
+            except Exception as e:
+                logger.error(f"Failed to delete embeddings from ChromaDB: {str(e)}")
+        
+        # Delete from SQLite
+        deleted_count = SemanticChunk.delete().where(SemanticChunk.paper == paper).execute()
+        
+        logger.info(f"Deleted {deleted_count} semantic chunks for paper {paper_id}")
+        return deleted_count
+        
+    except Paper.DoesNotExist:
+        logger.error(f"Paper {paper_id} not found")
+        return 0
+    except Exception as e:
+        logger.error(f"Failed to delete semantic chunks for paper {paper_id}: {str(e)}")
+        return 0

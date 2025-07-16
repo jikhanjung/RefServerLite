@@ -96,6 +96,10 @@ class ProcessingJob(BaseModel):
     embedding_error = TextField(null=True)
     embedding_completed_at = DateTimeField(null=True)
     
+    chunking_status = CharField(default='pending')  # pending, running, completed, failed
+    chunking_error = TextField(null=True)
+    chunking_completed_at = DateTimeField(null=True)
+    
     def update_progress(self, step: str, percentage: int):
         """Update job progress"""
         self.current_step = step
@@ -136,6 +140,12 @@ class ProcessingJob(BaseModel):
                 self.embedding_error = error
             if status == 'completed':
                 self.embedding_completed_at = datetime.datetime.now()
+        elif step == 'chunking':
+            self.chunking_status = status
+            if error:
+                self.chunking_error = error
+            if status == 'completed':
+                self.chunking_completed_at = datetime.datetime.now()
         self.save()
     
     def reset_step(self, step: str):
@@ -152,6 +162,10 @@ class ProcessingJob(BaseModel):
             self.embedding_status = 'pending'
             self.embedding_error = None
             self.embedding_completed_at = None
+        elif step == 'chunking':
+            self.chunking_status = 'pending'
+            self.chunking_error = None
+            self.chunking_completed_at = None
         self.save()
     
     def get_step_info(self):
@@ -171,6 +185,11 @@ class ProcessingJob(BaseModel):
                 'status': self.embedding_status,
                 'error': self.embedding_error,
                 'completed_at': self.embedding_completed_at.isoformat() if self.embedding_completed_at else None
+            },
+            'chunking': {
+                'status': self.chunking_status,
+                'error': self.chunking_error,
+                'completed_at': self.chunking_completed_at.isoformat() if self.chunking_completed_at else None
             }
         }
 
@@ -185,10 +204,48 @@ class PageText(BaseModel):
             (('paper', 'page_number'), True),  # Ensure unique page text per paper
         )
 
+class SemanticChunk(BaseModel):
+    paper = ForeignKeyField(Paper, backref='semantic_chunks', on_delete='CASCADE')
+    text = TextField()
+    page_number = IntegerField()
+    chunk_index_on_page = IntegerField()
+    chunk_type = CharField(default='paragraph')  # 'paragraph', 'sentence_group', 'fallback_split'
+    start_char = IntegerField(null=True)  # Position within page text
+    end_char = IntegerField(null=True)    # End position within page text
+    bbox_x0 = FloatField(null=True)       # Bounding box coordinates (if available)
+    bbox_y0 = FloatField(null=True)
+    bbox_x1 = FloatField(null=True)
+    bbox_y1 = FloatField(null=True)
+    embedding_id = CharField(unique=True) # Stores the corresponding ID from ChromaDB
+    created_at = DateTimeField(default=datetime.datetime.now)
+    
+    def get_bbox(self):
+        """Get bounding box as a list [x0, y0, x1, y1]"""
+        if all(coord is not None for coord in [self.bbox_x0, self.bbox_y0, self.bbox_x1, self.bbox_y1]):
+            return [self.bbox_x0, self.bbox_y0, self.bbox_x1, self.bbox_y1]
+        return None
+    
+    def set_bbox(self, bbox):
+        """Set bounding box from a list [x0, y0, x1, y1]"""
+        if bbox and len(bbox) >= 4:
+            self.bbox_x0, self.bbox_y0, self.bbox_x1, self.bbox_y1 = bbox[:4]
+        else:
+            self.bbox_x0 = self.bbox_y0 = self.bbox_x1 = self.bbox_y1 = None
+    
+    class Meta:
+        indexes = (
+            # Ensure unique chunk per page and position
+            (('paper', 'page_number', 'chunk_index_on_page'), True),
+            # Index for efficient querying by embedding_id
+            (('embedding_id',), False),
+            # Index for efficient querying by chunk type
+            (('chunk_type',), False),
+        )
+
 def create_tables():
     """Create all database tables"""
     with db:
-        db.create_tables([User, Paper, Metadata, ProcessingJob, PageText])
+        db.create_tables([User, Paper, Metadata, ProcessingJob, PageText, SemanticChunk])
 
 def create_admin_user():
     """Create default admin user if it doesn't exist"""

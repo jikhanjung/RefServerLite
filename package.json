@@ -1,0 +1,26 @@
+{
+  "name": "refserverlite",
+  "version": "1.0.0",
+  "description": "A streamlined, lightweight PDF repository service with OCR, metadata extraction, and semantic search capabilities.",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {},
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jikhanjung/RefServerLite.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/jikhanjung/RefServerLite/issues"
+  },
+  "homepage": "https://github.com/jikhanjung/RefServerLite#readme",
+  "devDependencies": {
+    "@playwright/test": "^1.54.1",
+    "@types/node": "^24.0.14"
+  }
+}

@@ -4,11 +4,12 @@ from pathlib import Path
 from typing import Optional
 import numpy as np
 
-from .models import Paper, Metadata, ProcessingJob, PageText
-from .ocr import process_pdf_ocr, clean_extracted_text
+from .models import Paper, Metadata, ProcessingJob, PageText, SemanticChunk
+from .ocr import process_pdf_ocr, clean_extracted_text, extract_structured_text
 from .metadata import extract_metadata_from_text
-from .embedding import generate_embedding_for_document, generate_embeddings_for_pages
+from .embedding import generate_embedding_for_document, generate_embeddings_for_pages, embed_and_store_semantic_chunks
 from .db import get_chromadb_client, get_or_create_collection, add_document_to_collection
+from .chunking import create_semantic_chunks, get_chunking_stats
 
 logger = logging.getLogger(__name__)
 
@@ -43,20 +44,43 @@ class PDFProcessingPipeline:
             job.save()
             print(f"✅ Job status updated to processing")
             
-            # Step 1: OCR Processing
-            print(f"📖 Starting OCR processing...")
-            await self._process_ocr(job, paper)
-            print(f"✅ OCR processing completed")
+            # Check if this is a chunking-only job
+            is_chunking_only = (
+                job.ocr_status == 'completed' and 
+                job.metadata_status == 'completed' and 
+                job.embedding_status == 'completed' and
+                job.current_step == 'chunking'
+            )
             
-            # Step 2: Metadata Extraction
-            print(f"🔍 Starting metadata extraction...")
-            await self._extract_metadata(job, paper)
-            print(f"✅ Metadata extraction completed")
-            
-            # Step 3: Embedding Generation
-            print(f"🧠 Starting embedding generation...")
-            await self._generate_embeddings(job, paper)
-            print(f"✅ Embedding generation completed")
+            if is_chunking_only:
+                print(f"🔗 Running chunking-only job for {paper.filename}")
+                # Step 4: Semantic Chunking (Only)
+                print(f"🔗 Starting semantic chunking...")
+                await self._process_semantic_chunks(job, paper)
+                print(f"✅ Semantic chunking completed")
+            else:
+                # Full processing pipeline
+                print(f"🔄 Running full processing pipeline for {paper.filename}")
+                
+                # Step 1: OCR Processing
+                print(f"📖 Starting OCR processing...")
+                await self._process_ocr(job, paper)
+                print(f"✅ OCR processing completed")
+                
+                # Step 2: Metadata Extraction
+                print(f"🔍 Starting metadata extraction...")
+                await self._extract_metadata(job, paper)
+                print(f"✅ Metadata extraction completed")
+                
+                # Step 3: Embedding Generation
+                print(f"🧠 Starting embedding generation...")
+                await self._generate_embeddings(job, paper)
+                print(f"✅ Embedding generation completed")
+                
+                # Step 4: Semantic Chunking (Optional, non-blocking)
+                print(f"🔗 Starting semantic chunking...")
+                await self._process_semantic_chunks(job, paper)
+                print(f"✅ Semantic chunking completed")
             
             # Mark job as completed
             job.mark_completed()
@@ -88,11 +112,17 @@ class PDFProcessingPipeline:
             # Store individual page texts in database
             print(f"💾 Storing {len(page_texts)} page texts in database...")
             for page_num, page_text in enumerate(page_texts, 1):
-                PageText.create(
+                # Use get_or_create to handle existing page texts
+                page_text_obj, created = PageText.get_or_create(
                     paper=paper,
                     page_number=page_num,
-                    text=page_text
+                    defaults={'text': page_text}
                 )
+                
+                # Update existing page text if it already exists
+                if not created:
+                    page_text_obj.text = page_text
+                    page_text_obj.save()
             
             # For backward compatibility, also store concatenated text
             full_text = "\n\n".join(page_texts)
@@ -250,6 +280,95 @@ class PDFProcessingPipeline:
             job.update_step_status('embedding', 'failed', str(e))
             logger.error(f"Embedding generation failed for document {paper.doc_id}: {str(e)}")
             raise
+
+    async def _process_semantic_chunks(self, job: ProcessingJob, paper: Paper):
+        """
+        Semantic chunking step - Extract and process semantic chunks
+        This is a non-critical step that won't fail the entire pipeline
+        """
+        try:
+            print(f"🔗 Starting semantic chunking for document {paper.doc_id}")
+            logger.info(f"Starting semantic chunking for document {paper.doc_id}")
+            
+            # Update chunking status to running
+            job.update_step_status('chunking', 'running')
+            
+            # Clean up any existing chunks first to avoid conflicts
+            try:
+                from .embedding import delete_semantic_chunks_for_paper
+                existing_count = delete_semantic_chunks_for_paper(paper.doc_id, self.chroma_collection)
+                if existing_count > 0:
+                    print(f"🗑️ Removed {existing_count} existing chunks")
+            except Exception as cleanup_error:
+                logger.warning(f"Failed to clean up existing chunks: {str(cleanup_error)}")
+            
+            # Check if paper file exists
+            if not Path(paper.file_path).exists():
+                logger.warning(f"Paper file not found: {paper.file_path}")
+                print(f"⚠️ Paper file not found, skipping semantic chunking")
+                return
+            
+            # Always extract structured text from PDF for semantic chunking
+            # (PageText uses cleaned text without paragraph structure)
+            print(f"📄 Extracting structured text from PDF for semantic chunking...")
+            page_structures, ocr_used = extract_structured_text(paper.file_path)
+            
+            if not page_structures:
+                logger.warning(f"No structured text extracted for document {paper.doc_id}")
+                print(f"⚠️ No structured text extracted, skipping semantic chunking")
+                return
+            
+            print(f"📝 Extracted {len(page_structures)} page structures (OCR used: {ocr_used})")
+            
+            # Create semantic chunks
+            print(f"✂️ Creating semantic chunks...")
+            chunks = create_semantic_chunks(page_structures)
+            
+            if not chunks:
+                logger.warning(f"No semantic chunks created for document {paper.doc_id}")
+                print(f"⚠️ No semantic chunks created")
+                return
+            
+            # Generate chunking statistics
+            stats = get_chunking_stats(chunks)
+            print(f"📊 Chunking stats: {stats}")
+            logger.info(f"Chunking statistics for {paper.doc_id}: {stats}")
+            
+            # Generate embeddings and store chunks
+            print(f"🧠 Generating embeddings for {len(chunks)} semantic chunks...")
+            chunk_ids = embed_and_store_semantic_chunks(
+                paper.doc_id, 
+                chunks, 
+                self.chroma_client, 
+                self.chroma_collection
+            )
+            
+            print(f"✅ Successfully processed {len(chunk_ids)} semantic chunks")
+            logger.info(f"Semantic chunking completed for document {paper.doc_id}: {len(chunk_ids)} chunks processed")
+            
+            # Update chunking status to completed
+            job.update_step_status('chunking', 'completed')
+            
+        except Exception as e:
+            # Log the error but don't fail the entire pipeline
+            error_msg = f"Semantic chunking failed for document {paper.doc_id}: {str(e)}"
+            logger.error(error_msg)
+            print(f"⚠️ {error_msg}")
+            
+            # Update chunking status to failed
+            job.update_step_status('chunking', 'failed', str(e))
+            
+            # Clean up any partial chunk data
+            try:
+                from .embedding import delete_semantic_chunks_for_paper
+                deleted_count = delete_semantic_chunks_for_paper(paper.doc_id, self.chroma_collection)
+                if deleted_count > 0:
+                    logger.info(f"Cleaned up {deleted_count} partial semantic chunks")
+            except Exception as cleanup_error:
+                logger.error(f"Failed to clean up partial chunks: {str(cleanup_error)}")
+            
+            # Don't raise the exception - semantic chunking is optional
+            print(f"🔄 Continuing without semantic chunks...")
 
 # Background task processing
 async def process_pending_jobs():

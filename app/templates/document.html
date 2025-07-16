@@ -173,6 +173,30 @@
                             </div>
                         </div>
                         {% endif %}
+                        
+                        <!-- Semantic Chunks Section -->
+                        <div class="mt-3">
+                            <div class="card bg-light">
+                                <div class="card-body py-2">
+                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                        <h6 class="mb-0" style="font-size: 0.85em; color: #666;">
+                                            <i class="bi bi-puzzle"></i> Semantic Chunks
+                                        </h6>
+                                        <button class="btn btn-xs btn-outline-success" id="applyChunkingBtn" data-doc-id="{{ paper.doc_id }}">
+                                            Apply Chunking
+                                        </button>
+                                    </div>
+                                    <div id="chunkingStatus">
+                                        <div class="text-center">
+                                            <div class="spinner-border spinner-border-sm" role="status">
+                                                <span class="visually-hidden">Loading...</span>
+                                            </div>
+                                            <small class="text-muted ms-2">Loading chunking status...</small>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -212,13 +236,30 @@
             </div>
         </div>
         
-        <!-- Document Pages Row -->
+        <!-- Document Content Tabs Row -->
         <div class="row">
             <div class="col-12">
-                <!-- Page Navigation and Content -->
-                <div class="card">
-                    <div class="card-header d-flex justify-content-between align-items-center">
-                        <h5 class="mb-0">Document Pages</h5>
+                <!-- Tab Navigation -->
+                <ul class="nav nav-tabs" id="documentTabs" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="pages-tab" data-bs-toggle="tab" data-bs-target="#pages-content" type="button" role="tab" aria-controls="pages-content" aria-selected="true">
+                            <i class="bi bi-file-earmark-text"></i> Pages
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="chunks-tab" data-bs-toggle="tab" data-bs-target="#chunks-content" type="button" role="tab" aria-controls="chunks-content" aria-selected="false">
+                            <i class="bi bi-puzzle"></i> Semantic Chunks
+                        </button>
+                    </li>
+                </ul>
+                
+                <!-- Tab Content -->
+                <div class="tab-content" id="documentTabContent">
+                    <!-- Pages Tab -->
+                    <div class="tab-pane fade show active" id="pages-content" role="tabpanel" aria-labelledby="pages-tab">
+                        <div class="card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <h5 class="mb-0">Document Pages</h5>
                         {% if page_texts %}
                         <div class="d-flex align-items-center gap-3">
                             <span class="text-muted" id="pageInfo">Page 1 of {{ page_texts|length }}</span>
@@ -298,6 +339,36 @@
                         {% else %}
                         <p class="text-muted mb-0">No page content available. The document may still be processing.</p>
                         {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Semantic Chunks Tab -->
+                    <div class="tab-pane fade" id="chunks-content" role="tabpanel" aria-labelledby="chunks-tab">
+                        <div class="card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <h5 class="mb-0">Semantic Chunks</h5>
+                                <div class="d-flex align-items-center gap-3">
+                                    <select class="form-select form-select-sm" id="chunkPageFilter" style="width: auto;">
+                                        <option value="">All Pages</option>
+                                    </select>
+                                    <button class="btn btn-outline-primary btn-sm" onclick="loadChunks()">
+                                        <i class="bi bi-arrow-clockwise"></i> Refresh
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="card-body">
+                                <!-- Chunks will be loaded here -->
+                                <div id="chunksContainer">
+                                    <div class="text-center py-4">
+                                        <div class="spinner-border" role="status">
+                                            <span class="visually-hidden">Loading chunks...</span>
+                                        </div>
+                                        <p class="text-muted mt-2">Loading semantic chunks...</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -321,6 +392,12 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Initialize page navigation
     initPageNavigation();
+    
+    // Initialize chunking status
+    loadChunkingStatus();
+    
+    // Set up chunking button
+    setupChunkingButton();
 
     // Toggle to edit mode
     editBtn.addEventListener('click', function() {
@@ -491,6 +568,312 @@ document.addEventListener('DOMContentLoaded', function() {
             document.body.style.overflow = 'hidden';
         }
     };
+
+    // Chunking related functions
+    function loadChunkingStatus() {
+        const docId = '{{ paper.doc_id }}';
+        const statusDiv = document.getElementById('chunkingStatus');
+        
+        fetch(`/api/v1/admin/chunking-status`)
+            .then(response => response.json())
+            .then(data => {
+                const docData = data.documents.find(doc => doc.doc_id === docId);
+                
+                if (docData) {
+                    displayChunkingStatus(docData);
+                } else {
+                    statusDiv.innerHTML = '<small class="text-muted">No chunking data found</small>';
+                }
+            })
+            .catch(error => {
+                console.error('Error loading chunking status:', error);
+                statusDiv.innerHTML = '<small class="text-danger">Error loading chunking status</small>';
+            });
+    }
+
+    function displayChunkingStatus(docData) {
+        const statusDiv = document.getElementById('chunkingStatus');
+        const applyBtn = document.getElementById('applyChunkingBtn');
+        
+        if (docData.has_chunks) {
+            // Show chunk statistics
+            const chunkTypes = Object.entries(docData.chunk_types || {})
+                .map(([type, count]) => `<span class="badge bg-secondary me-1">${type}: ${count}</span>`)
+                .join('');
+            
+            statusDiv.innerHTML = `
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <small class="text-success"><i class="bi bi-check-circle"></i> ${docData.chunk_count} chunks created</small>
+                        <div class="mt-1">${chunkTypes}</div>
+                    </div>
+                </div>
+            `;
+            
+            applyBtn.textContent = 'Reapply';
+            applyBtn.className = 'btn btn-xs btn-outline-warning';
+        } else {
+            statusDiv.innerHTML = '<small class="text-muted"><i class="bi bi-info-circle"></i> No semantic chunks created yet</small>';
+            applyBtn.textContent = 'Apply Chunking';
+            applyBtn.className = 'btn btn-xs btn-outline-success';
+        }
+    }
+
+    function setupChunkingButton() {
+        const applyBtn = document.getElementById('applyChunkingBtn');
+        
+        applyBtn.addEventListener('click', async function() {
+            const docId = this.dataset.docId;
+            const originalText = this.textContent;
+            
+            // Update button state
+            this.textContent = 'Processing...';
+            this.disabled = true;
+            
+            try {
+                const response = await fetch(`/api/v1/admin/apply-chunking/${docId}`, {
+                    method: 'POST'
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    showMessage(result.message, 'success');
+                    
+                    // Reload chunking status after a short delay
+                    setTimeout(() => {
+                        loadChunkingStatus();
+                    }, 2000);
+                } else {
+                    const error = await response.json();
+                    showMessage(`Error: ${error.detail}`, 'error');
+                }
+            } catch (error) {
+                showMessage(`Error: ${error.message}`, 'error');
+            } finally {
+                // Reset button state
+                this.textContent = originalText;
+                this.disabled = false;
+            }
+        });
+    }
+    
+    // Semantic Chunks functionality
+    function setupChunksTab() {
+        // Load chunks when tab is activated
+        document.getElementById('chunks-tab').addEventListener('shown.bs.tab', function (e) {
+            loadChunks();
+        });
+        
+        // Set up page filter
+        document.getElementById('chunkPageFilter').addEventListener('change', function() {
+            loadChunks();
+        });
+    }
+    
+    // Initialize chunks tab
+    setupChunksTab();
 });
+
+// Global function to load chunks
+function loadChunks() {
+    const docId = '{{ paper.doc_id }}';
+    const pageFilter = document.getElementById('chunkPageFilter').value;
+    const container = document.getElementById('chunksContainer');
+    
+    // Show loading state
+    container.innerHTML = `
+        <div class="text-center py-4">
+            <div class="spinner-border" role="status">
+                <span class="visually-hidden">Loading chunks...</span>
+            </div>
+            <p class="text-muted mt-2">Loading semantic chunks...</p>
+        </div>
+    `;
+    
+    // Build URL with optional page filter
+    let url = `/api/v1/document/${docId}/chunks`;
+    if (pageFilter) {
+        url += `?page=${pageFilter}`;
+    }
+    
+    fetch(url)
+        .then(response => response.json())
+        .then(data => {
+            displayChunks(data);
+            updatePageFilter(data);
+        })
+        .catch(error => {
+            console.error('Error loading chunks:', error);
+            container.innerHTML = `
+                <div class="alert alert-danger">
+                    <i class="bi bi-exclamation-triangle"></i> Error loading chunks: ${error.message}
+                </div>
+            `;
+        });
+}
+
+function displayChunks(data) {
+    const container = document.getElementById('chunksContainer');
+    
+    if (!data.chunks || data.chunks.length === 0) {
+        container.innerHTML = `
+            <div class="text-center py-4">
+                <i class="bi bi-info-circle text-muted" style="font-size: 2rem;"></i>
+                <p class="text-muted mt-2">No semantic chunks found for this document.</p>
+                <p class="text-muted">
+                    <small>Use the "Apply Chunking" button in the Document Details section to generate chunks.</small>
+                </p>
+            </div>
+        `;
+        return;
+    }
+    
+    // Build chunks display
+    let html = '';
+    
+    // Statistics section
+    if (data.statistics) {
+        const stats = data.statistics;
+        html += `
+            <div class="alert alert-info mb-4">
+                <div class="row text-center">
+                    <div class="col-md-3">
+                        <strong>${stats.total_chunks}</strong><br>
+                        <small class="text-muted">Total Chunks</small>
+                    </div>
+                    <div class="col-md-3">
+                        <strong>${stats.pages_with_chunks}</strong><br>
+                        <small class="text-muted">Pages</small>
+                    </div>
+                    <div class="col-md-3">
+                        <strong>${stats.avg_chunk_length}</strong><br>
+                        <small class="text-muted">Avg Length</small>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="d-flex flex-wrap justify-content-center gap-1">
+                            ${Object.entries(stats.chunk_types).map(([type, count]) => 
+                                `<span class="badge bg-secondary">${type}: ${count}</span>`
+                            ).join('')}
+                        </div>
+                        <small class="text-muted">Types</small>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+    
+    // Group chunks by page
+    const chunksByPage = {};
+    data.chunks.forEach(chunk => {
+        if (!chunksByPage[chunk.page_number]) {
+            chunksByPage[chunk.page_number] = [];
+        }
+        chunksByPage[chunk.page_number].push(chunk);
+    });
+    
+    // Display chunks grouped by page
+    Object.keys(chunksByPage).sort((a, b) => parseInt(a) - parseInt(b)).forEach(pageNum => {
+        const pageChunks = chunksByPage[pageNum];
+        
+        html += `
+            <div class="mb-4">
+                <h6 class="border-bottom pb-2 mb-3">
+                    <i class="bi bi-file-earmark-text"></i> Page ${pageNum} 
+                    <span class="badge bg-primary ms-2">${pageChunks.length} chunks</span>
+                </h6>
+                <div class="row">
+        `;
+        
+        pageChunks.forEach((chunk, index) => {
+            const truncatedText = chunk.text.length > 200 ? 
+                chunk.text.substring(0, 200) + '...' : chunk.text;
+            
+            html += `
+                <div class="col-lg-6 mb-3">
+                    <div class="card h-100">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between align-items-start mb-2">
+                                <div>
+                                    <span class="badge bg-secondary">${chunk.chunk_type}</span>
+                                    <small class="text-muted ms-2">Chunk ${chunk.chunk_index_on_page + 1}</small>
+                                </div>
+                                <div class="chunk-embedding-viz">
+                                    <img src="/api/v1/document/${data.doc_id}/chunk/${chunk.id}/embedding_heatmap_mini" 
+                                         alt="Chunk ${chunk.id} Embedding" 
+                                         style="width: 128px; height: 128px; border: 1px solid #ddd; border-radius: 4px; image-rendering: pixelated;"
+                                         loading="lazy"
+                                         title="Chunk embedding visualization"
+                                         onerror="this.style.display='none'">
+                                </div>
+                            </div>
+                            <div class="chunk-text" style="font-size: 0.9em; line-height: 1.4;">
+                                <div class="text-preview" id="preview-${chunk.id}">
+                                    ${truncatedText.replace(/\n/g, '<br>')}
+                                </div>
+                                ${chunk.text.length > 200 ? `
+                                    <div class="text-full" id="full-${chunk.id}" style="display: none;">
+                                        ${chunk.text.replace(/\n/g, '<br>')}
+                                    </div>
+                                    <button class="btn btn-link btn-sm p-0 mt-1" onclick="toggleChunkText(${chunk.id})">
+                                        <span id="toggle-${chunk.id}">Show more</span>
+                                    </button>
+                                ` : ''}
+                            </div>
+                            ${chunk.start_char !== null ? `
+                                <small class="text-muted mt-2 d-block">
+                                    Characters: ${chunk.start_char}-${chunk.end_char} | Length: ${chunk.text.length}
+                                </small>
+                            ` : ''}
+                        </div>
+                    </div>
+                </div>
+            `;
+        });
+        
+        html += `
+                </div>
+            </div>
+        `;
+    });
+    
+    container.innerHTML = html;
+}
+
+function updatePageFilter(data) {
+    const filter = document.getElementById('chunkPageFilter');
+    const currentValue = filter.value;
+    
+    // Clear existing options except "All Pages"
+    filter.innerHTML = '<option value="">All Pages</option>';
+    
+    // Get unique page numbers from chunks
+    const pages = [...new Set(data.chunks.map(chunk => chunk.page_number))].sort((a, b) => a - b);
+    
+    pages.forEach(pageNum => {
+        const option = document.createElement('option');
+        option.value = pageNum;
+        option.textContent = `Page ${pageNum}`;
+        if (currentValue == pageNum) {
+            option.selected = true;
+        }
+        filter.appendChild(option);
+    });
+}
+
+function toggleChunkText(chunkId) {
+    const preview = document.getElementById(`preview-${chunkId}`);
+    const full = document.getElementById(`full-${chunkId}`);
+    const toggle = document.getElementById(`toggle-${chunkId}`);
+    
+    if (full.style.display === 'none') {
+        preview.style.display = 'none';
+        full.style.display = 'block';
+        toggle.textContent = 'Show less';
+    } else {
+        preview.style.display = 'block';
+        full.style.display = 'none';
+        toggle.textContent = 'Show more';
+    }
+}
 </script>
 {% endblock %}

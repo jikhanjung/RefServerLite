@@ -8,7 +8,10 @@ A streamlined, lightweight PDF repository service with OCR, metadata extraction,
 - **OCR**: Automatic text extraction using Tesseract OCR for scanned documents
 - **Metadata Extraction**: Rule-based extraction of title, authors, journal, year, and DOI
 - **Semantic Search**: Vector embeddings using BGE-M3 model with ChromaDB
+- **Semantic Chunking**: Hierarchical text segmentation for improved RAG performance
 - **Admin Dashboard**: Web interface for document management and search
+- **Embedding Visualizations**: 2D heatmap fingerprints for embedding analysis
+- **User Authentication**: Basic admin authentication system
 - **RESTful API**: Complete API for integration with other services
 
 ## Tech Stack
@@ -19,6 +22,8 @@ A streamlined, lightweight PDF repository service with OCR, metadata extraction,
 - **OCR**: Tesseract
 - **PDF Processing**: PyMuPDF
 - **Embeddings**: Sentence Transformers (BGE-M3)
+- **Visualizations**: Matplotlib
+- **Authentication**: Passlib with bcrypt
 
 ## Installation
 
@@ -80,16 +85,27 @@ The application will be available at `http://localhost:8000`
 
 ### API Endpoints
 
+**Core APIs:**
 - `POST /api/v1/upload` - Upload PDF file
 - `GET /api/v1/job/{job_id}` - Check processing status
 - `GET /api/v1/document/{doc_id}` - Get document details
-- `GET /api/v1/search` - Search documents (keyword/semantic)
+- `GET /api/v1/search` - Search documents (keyword/semantic/chunks)
+
+**Chunking APIs:**
+- `GET /api/v1/document/{doc_id}/chunks` - Get semantic chunks
+- `POST /api/v1/admin/apply-chunking/{doc_id}` - Apply semantic chunking
+- `GET /api/v1/admin/chunking-status` - Check chunking status
+
+**Visualization APIs:**
+- `GET /api/v1/document/{doc_id}/embedding_heatmap_mini` - 2D embedding heatmap
+- `GET /api/v1/document/{doc_id}/embedding_3d_*` - 3D visualizations (research)
 
 ### Web Interface
 
 - `/` - Upload page
+- `/login` - Admin login
 - `/admin` - Admin dashboard with document list and search
-- `/admin/document/{doc_id}` - Document detail view
+- `/admin/document/{doc_id}` - Document detail view with tabs (Pages/Chunks)
 
 ## Processing Pipeline
 
@@ -97,6 +113,7 @@ The application will be available at `http://localhost:8000`
 2. **OCR**: Text extraction with automatic OCR detection
 3. **Metadata**: Rule-based extraction of bibliographic information
 4. **Embeddings**: Vector generation and storage in ChromaDB
+5. **Semantic Chunking**: Hierarchical text segmentation (optional, non-blocking)
 
 ## Docker Deployment
 
@@ -136,6 +153,22 @@ curl "http://localhost:8000/api/v1/search?q=machine+learning&type=keyword"
 
 # Semantic search
 curl "http://localhost:8000/api/v1/search?q=neural+networks&type=semantic"
+
+# Semantic search with scope
+curl "http://localhost:8000/api/v1/search?q=neural+networks&type=semantic&search_scope=chunks"
+```
+
+### Manage Semantic Chunks
+
+```bash
+# Get document chunks
+curl "http://localhost:8000/api/v1/document/doc-id/chunks"
+
+# Apply chunking to document
+curl -X POST "http://localhost:8000/api/v1/admin/apply-chunking/doc-id"
+
+# Check chunking status
+curl "http://localhost:8000/api/v1/admin/chunking-status"
 ```
 
 ## Development
@@ -151,6 +184,10 @@ RefServerLite/
 │   ├── ocr.py           # OCR processing
 │   ├── metadata.py      # Metadata extraction
 │   ├── embedding.py     # Embedding generation
+│   ├── chunking.py      # Semantic chunking
+│   ├── visualize.py     # 2D visualizations
+│   ├── visualize_3d.py  # 3D visualizations
+│   ├── auth.py          # Authentication
 │   ├── db.py            # Database connections
 │   ├── static/          # CSS/JS files
 │   └── templates/       # HTML templates
@@ -158,6 +195,8 @@ RefServerLite/
 │   ├── pdfs/            # Uploaded PDF files
 │   ├── refserver.db     # SQLite database
 │   └── chromadb/        # ChromaDB data
+├── devlog/              # Development logs
+├── migrations/          # Database migrations
 ├── tests/               # Test files
 └── requirements.txt
 ```

@@ -107,6 +107,8 @@ dmypy.json
 # Data directories
 data/
 !data/.gitkeep
+refdata/
+!refdata/.gitkeep
 
 # ChromaDB
 chromadb/
@@ -138,3 +140,10 @@ logs/
 models/
 .cache/
 huggingface/
+
+# Playwright
+node_modules/
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
