@@ -1,0 +1,38 @@
+# Zotero Import Configuration Template
+# Copy this file to config.yml and update with your actual values
+
+zotero:
+  # Your Zotero library ID (found in Zotero Settings > Feeds/API)
+  library_id: "YOUR_LIBRARY_ID"
+  
+  # Your Zotero API key (create at https://www.zotero.org/settings/keys)
+  # Required permissions: Library - Read
+  api_key: "YOUR_API_KEY"
+
+refserver:
+  # RefServerLite API URL
+  api_url: "http://localhost:8000"
+  
+  # RefServerLite admin credentials
+  username: "admin"
+  password: "admin123"
+
+import_options:
+  # Number of items to process in each batch
+  batch_size: 20
+  
+  # Delay between batches (seconds) to respect rate limits
+  delay_seconds: 1.5
+  
+  # Skip items that already exist in RefServerLite
+  skip_existing: true
+  
+  # Optional: Only import from specific collections (leave empty for all)
+  collections: []
+    # - "Collection Name 1"
+    # - "Collection Name 2"
+  
+  # Optional: Exclude items with specific tags
+  exclude_tags: []
+    # - "archived"
+    # - "draft"

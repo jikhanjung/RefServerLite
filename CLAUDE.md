@@ -30,6 +30,10 @@ RefServerLite is a streamlined PDF repository service with OCR, metadata extract
 ├── /data
 │   ├── /pdfs           # Uploaded PDF storage
 │   └── refserver.db    # SQLite database
+├── /scripts            # Utility scripts
+│   ├── import_from_zotero.py  # Zotero import script
+│   ├── config.yml.example     # Configuration template
+│   └── config.yml            # Active configuration
 ├── /devlog             # Development logs and experiments
 ├── /migrations         # Database migration files
 └── /tests              # Pytest test suite
@@ -39,16 +43,19 @@ RefServerLite is a streamlined PDF repository service with OCR, metadata extract
 
 ### 1. Database Models (models.py)
 - **Paper**: Main document model (doc_id, filename, file_path, ocr_text)
-- **Metadata**: Bibliographic info (title, authors, journal, year)
+- **Metadata**: Bibliographic info (title, authors, journal, year, source)
 - **ProcessingJob**: Tracks async processing status with detailed step tracking
 - **PageText**: Stores extracted text for each page
 - **SemanticChunk**: Stores semantic chunks with metadata and embedding IDs
 - **User**: User authentication and admin access
+- **ZoteroLink**: Links papers to Zotero items (zotero_key, library_id)
 - **Note**: Embeddings stored in ChromaDB, not SQLite
 
 ### 2. API Endpoints (main.py)
 - `POST /api/v1/upload` - Upload PDF for processing
+- `POST /api/v1/papers/upload_with_metadata` - Upload PDF with Zotero metadata
 - `GET /api/v1/job/{job_id}` - Check processing status
+- `GET /api/v1/jobs` - List all processing jobs (admin)
 - `GET /api/v1/document/{doc_id}` - Retrieve processed document
 - `GET /api/v1/search` - Search documents (keyword/semantic/chunks)
 - `GET /api/v1/document/{doc_id}/chunks` - Get semantic chunks for document
@@ -81,6 +88,7 @@ RefServerLite is a streamlined PDF repository service with OCR, metadata extract
 - `index.html` - Upload form & document list
 - `document.html` - Document detail view with tabbed interface
 - `admin.html` - Admin dashboard with search and chunk management
+- `jobs.html` - Background job monitoring dashboard
 - `login.html` - User authentication
 
 ## Implementation Status
@@ -113,12 +121,34 @@ RefServerLite is a streamlined PDF repository service with OCR, metadata extract
 - [x] Embedding visualizations
 - [x] Admin chunk management
 
-### Phase 5: Testing & Deployment 🔄
+### Phase 5: Zotero Integration ✅
+- [x] Zotero API integration with pyzotero
+- [x] Interactive import script with batch processing
+- [x] Configuration management system
+- [x] Collection resolution and preview
+- [x] Progress tracking and resume capability
+- [x] Metadata upload endpoint
+- [x] Database schema extensions
+
+### Phase 6: Job Monitoring ✅
+- [x] Background job monitoring dashboard
+- [x] Real-time job status updates
+- [x] Dedicated job monitoring page
+- [x] Admin authentication for job APIs
+- [x] Job filtering and pagination
+
+### Phase 7: Performance Optimization ✅
+- [x] Database concurrency improvements
+- [x] SQLite WAL mode implementation
+- [x] Bulk insert optimization
+- [x] Retry mechanisms for database locks
+- [x] Performance monitoring and metrics
+
+### Phase 8: Testing & Deployment 🔄
 - [x] Create Dockerfile
 - [x] Set up docker-compose.yml
 - [x] Database migrations
 - [ ] Write comprehensive unit tests (pytest)
-- [ ] Performance optimization
 - [ ] Production deployment guide
 
 ## Key Libraries
@@ -137,6 +167,8 @@ pytest
 matplotlib (for visualizations)
 numpy
 passlib (for authentication)
+pyzotero (for Zotero integration)
+PyYAML (for configuration)
 ```
 
 ## Important Notes
@@ -150,3 +182,8 @@ passlib (for authentication)
 - Semantic chunking supports hierarchical text splitting
 - 2D heatmap visualizations for embedding fingerprints
 - 3D visualizations available via API but not used in production UI
+- Zotero integration with batch processing and caching
+- Database performance optimized with WAL mode and bulk operations
+- Real-time job monitoring with dedicated admin dashboard
+- Metadata source tracking (auto-extracted vs user-provided)
+- Date parsing supports various formats (01/2004, 2004-01-15, etc.)

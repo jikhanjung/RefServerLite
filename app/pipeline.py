@@ -146,6 +146,17 @@ class PDFProcessingPipeline:
             job.update_progress('metadata', 50)
             logger.info(f"Starting metadata extraction for document {paper.doc_id}")
             
+            # Check if metadata already exists from user_api
+            try:
+                existing_metadata = paper.metadata.get()
+                if existing_metadata.source == 'user_api':
+                    logger.info(f"Skipping metadata extraction - user-provided metadata exists for document {paper.doc_id}")
+                    job.update_step_status('metadata', 'completed')
+                    job.update_progress('metadata', 70)
+                    return
+            except Metadata.DoesNotExist:
+                pass
+            
             if not paper.ocr_text:
                 logger.warning(f"No text available for metadata extraction in document {paper.doc_id}")
                 job.update_step_status('metadata', 'completed')

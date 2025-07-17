@@ -1,6 +1,7 @@
 services:
-  refserver:
-    build: .
+  refserverlite:
+    image: honestjung/refserverlite:latest
+    # build: .
     ports:
       - "8000:8000"
     volumes:

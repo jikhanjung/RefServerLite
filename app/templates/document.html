@@ -56,6 +56,20 @@
                                 <dt style="font-size: 0.85em;">DOI</dt>
                                 <dd id="doiDisplay" class="mb-2">{{ metadata.doi or '' }}</dd>
                                 
+                                {% if zotero_link %}
+                                <dt style="font-size: 0.85em;">Zotero Key</dt>
+                                <dd id="zoteroKeyDisplay" class="mb-2">
+                                    <code style="font-size: 0.8em;">{{ zotero_link.zotero_key }}</code>
+                                    <a href="https://www.zotero.org/{{ zotero_link.library_type }}/{{ zotero_link.library_id }}/items/{{ zotero_link.zotero_key }}" 
+                                       target="_blank" 
+                                       class="btn btn-sm btn-outline-primary ms-1" 
+                                       style="padding: 0.1rem 0.3rem; font-size: 0.7rem;"
+                                       title="View in Zotero">
+                                        <i class="bi bi-box-arrow-up-right"></i>
+                                    </a>
+                                </dd>
+                                {% endif %}
+                                
                                 <dt style="font-size: 0.85em;">Abstract</dt>
                                 <dd id="abstractDisplay" class="mb-0" style="max-height: 60px; overflow-y: auto; font-size: 0.8em;">{{ metadata.abstract or '' }}</dd>
                             </dl>
@@ -349,9 +363,15 @@
                             <div class="card-header d-flex justify-content-between align-items-center">
                                 <h5 class="mb-0">Semantic Chunks</h5>
                                 <div class="d-flex align-items-center gap-3">
-                                    <select class="form-select form-select-sm" id="chunkPageFilter" style="width: auto;">
-                                        <option value="">All Pages</option>
-                                    </select>
+                                    <span class="text-muted" id="chunkPageInfo">Page 1 of 1</span>
+                                    <div class="btn-group">
+                                        <button type="button" class="btn btn-outline-secondary btn-sm" id="prevChunkPageBtn" disabled>
+                                            <i class="bi bi-chevron-left"></i> Previous
+                                        </button>
+                                        <button type="button" class="btn btn-outline-secondary btn-sm" id="nextChunkPageBtn">
+                                            Next <i class="bi bi-chevron-right"></i>
+                                        </button>
+                                    </div>
                                     <button class="btn btn-outline-primary btn-sm" onclick="loadChunks()">
                                         <i class="bi bi-arrow-clockwise"></i> Refresh
                                     </button>
@@ -381,6 +401,11 @@
 // Global variables for page navigation
 let currentPage = 1;
 let totalPages = 0;
+
+// Global variables for chunk page navigation
+let currentChunkPage = 1;
+let totalChunkPages = 1;
+let allChunkPages = [];
 
 // Metadata editing functionality
 document.addEventListener('DOMContentLoaded', function() {
@@ -661,23 +686,43 @@ document.addEventListener('DOMContentLoaded', function() {
     function setupChunksTab() {
         // Load chunks when tab is activated
         document.getElementById('chunks-tab').addEventListener('shown.bs.tab', function (e) {
-            loadChunks();
+            loadAllChunks();
         });
         
-        // Set up page filter
-        document.getElementById('chunkPageFilter').addEventListener('change', function() {
-            loadChunks();
-        });
+        // Set up chunk page navigation
+        setupChunkPageNavigation();
+    }
+    
+    function setupChunkPageNavigation() {
+        const prevBtn = document.getElementById('prevChunkPageBtn');
+        const nextBtn = document.getElementById('nextChunkPageBtn');
+        const pageInfo = document.getElementById('chunkPageInfo');
+
+        if (prevBtn && nextBtn) {
+            prevBtn.addEventListener('click', () => {
+                if (currentChunkPage > 1) {
+                    showChunkPage(currentChunkPage - 1);
+                }
+            });
+
+            nextBtn.addEventListener('click', () => {
+                if (currentChunkPage < totalChunkPages) {
+                    showChunkPage(currentChunkPage + 1);
+                }
+            });
+        }
+
+        // Show first page initially
+        showChunkPage(1);
     }
     
     // Initialize chunks tab
     setupChunksTab();
 });
 
-// Global function to load chunks
-function loadChunks() {
+// Global function to load all chunks and set up navigation
+function loadAllChunks() {
     const docId = '{{ paper.doc_id }}';
-    const pageFilter = document.getElementById('chunkPageFilter').value;
     const container = document.getElementById('chunksContainer');
     
     // Show loading state
@@ -690,17 +735,11 @@ function loadChunks() {
         </div>
     `;
     
-    // Build URL with optional page filter
-    let url = `/api/v1/document/${docId}/chunks`;
-    if (pageFilter) {
-        url += `?page=${pageFilter}`;
-    }
-    
-    fetch(url)
+    fetch(`/api/v1/document/${docId}/chunks`)
         .then(response => response.json())
         .then(data => {
-            displayChunks(data);
-            updatePageFilter(data);
+            setupChunkPages(data);
+            showChunkPage(1);
         })
         .catch(error => {
             console.error('Error loading chunks:', error);
@@ -710,6 +749,153 @@ function loadChunks() {
                 </div>
             `;
         });
+}
+
+// Legacy function for refresh button
+function loadChunks() {
+    loadAllChunks();
+}
+
+// Set up chunk pages from loaded data
+function setupChunkPages(data) {
+    if (!data.chunks || data.chunks.length === 0) {
+        allChunkPages = [];
+        totalChunkPages = 0;
+        updateChunkPageInfo();
+        return;
+    }
+    
+    // Group chunks by page
+    const chunksByPage = {};
+    data.chunks.forEach(chunk => {
+        if (!chunksByPage[chunk.page_number]) {
+            chunksByPage[chunk.page_number] = [];
+        }
+        chunksByPage[chunk.page_number].push(chunk);
+    });
+    
+    // Convert to sorted array of pages
+    allChunkPages = Object.keys(chunksByPage).sort((a, b) => parseInt(a) - parseInt(b)).map(pageNum => ({
+        pageNumber: parseInt(pageNum),
+        chunks: chunksByPage[pageNum],
+        stats: data.stats // Include overall stats
+    }));
+    
+    totalChunkPages = allChunkPages.length;
+    currentChunkPage = 1;
+    updateChunkPageInfo();
+}
+
+// Show specific chunk page
+function showChunkPage(pageNum) {
+    if (pageNum < 1 || pageNum > totalChunkPages) return;
+    
+    const container = document.getElementById('chunksContainer');
+    
+    if (totalChunkPages === 0) {
+        container.innerHTML = `
+            <div class="text-center py-4">
+                <i class="bi bi-info-circle text-muted" style="font-size: 2rem;"></i>
+                <p class="text-muted mt-2">No semantic chunks found for this document.</p>
+                <p class="text-muted">
+                    <small>Use the "Apply Chunking" button in the Document Details section to generate chunks.</small>
+                </p>
+            </div>
+        `;
+        return;
+    }
+    
+    const pageData = allChunkPages[pageNum - 1];
+    currentChunkPage = pageNum;
+    
+    // Display the chunks for this page
+    displaySinglePageChunks(pageData);
+    updateChunkPageInfo();
+}
+
+// Display chunks for a single page
+function displaySinglePageChunks(pageData) {
+    const container = document.getElementById('chunksContainer');
+    const docId = '{{ paper.doc_id }}';
+    
+    let html = `
+        <div class="mb-4">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h5 class="mb-0">
+                    <i class="bi bi-file-text"></i> Page ${pageData.pageNumber}
+                    <span class="badge bg-primary ms-2">${pageData.chunks.length} chunks</span>
+                </h5>
+            </div>
+        </div>
+    `;
+    
+    // Display chunks for this page
+    pageData.chunks.forEach((chunk, index) => {
+        const truncatedText = chunk.text.length > 200 ? 
+            chunk.text.substring(0, 200) + '...' : chunk.text;
+            
+        html += `
+            <div class="card mb-3">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-start mb-2">
+                        <div>
+                            <span class="badge bg-secondary">${chunk.chunk_type}</span>
+                            <small class="text-muted ms-2">Chunk ${chunk.chunk_index_on_page + 1}</small>
+                        </div>
+                        <div class="chunk-embedding-viz">
+                            <img src="/api/v1/document/${docId}/chunk/${chunk.id}/embedding_heatmap_mini" 
+                                 alt="Chunk ${chunk.id} Embedding" 
+                                 style="width: 64px; height: 64px; border: 1px solid #ddd; border-radius: 4px; image-rendering: pixelated;"
+                                 loading="lazy"
+                                 title="Chunk embedding visualization"
+                                 onerror="this.style.display='none'">
+                        </div>
+                    </div>
+                    
+                    <div class="chunk-text" style="font-size: 0.9em; line-height: 1.4;">
+                        <div class="text-preview" id="preview-${chunk.id}">
+                            ${truncatedText.replace(/\n/g, '<br>')}
+                        </div>
+                        ${chunk.text.length > 200 ? `
+                            <div class="text-full" id="full-${chunk.id}" style="display: none;">
+                                ${chunk.text.replace(/\n/g, '<br>')}
+                            </div>
+                            <button class="btn btn-link btn-sm p-0 mt-1" onclick="toggleChunkText(${chunk.id})">
+                                <span id="toggle-${chunk.id}">Show more</span>
+                            </button>
+                        ` : ''}
+                    </div>
+                    
+                    ${chunk.start_char !== null ? `
+                        <div class="mt-2">
+                            <small class="text-muted">
+                                Characters: ${chunk.start_char}-${chunk.end_char} | Length: ${chunk.text.length}
+                            </small>
+                        </div>
+                    ` : ''}
+                </div>
+            </div>
+        `;
+    });
+    
+    container.innerHTML = html;
+}
+
+// Update chunk page navigation info
+function updateChunkPageInfo() {
+    const prevBtn = document.getElementById('prevChunkPageBtn');
+    const nextBtn = document.getElementById('nextChunkPageBtn');
+    const pageInfo = document.getElementById('chunkPageInfo');
+    
+    if (prevBtn) prevBtn.disabled = (currentChunkPage <= 1);
+    if (nextBtn) nextBtn.disabled = (currentChunkPage >= totalChunkPages);
+    if (pageInfo) {
+        if (totalChunkPages === 0) {
+            pageInfo.textContent = 'No pages';
+        } else {
+            pageInfo.textContent = `Page ${currentChunkPage} of ${totalChunkPages}`;
+        }
+    }
 }
 
 function displayChunks(data) {

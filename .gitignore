@@ -141,6 +141,9 @@ models/
 .cache/
 huggingface/
 
+# Zotero cache
+scripts/zotero_cache/
+
 # Playwright
 node_modules/
 /test-results/

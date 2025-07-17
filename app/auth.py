@@ -37,20 +37,34 @@ def verify_token(token: str) -> Optional[str]:
     except JWTError:
         return None
 
-def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> Optional[User]:
-    """Get current user from JWT token"""
-    if not credentials:
-        return None
-    
-    username = verify_token(credentials.credentials)
-    if not username:
-        return None
-    
-    try:
-        user = User.get(User.username == username)
-        return user
-    except User.DoesNotExist:
-        return None
+def get_current_user(
+    request: Request, # Request 객체를 추가로 받도록 변경
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+) -> Optional[User]:
+    """
+    Get current user from JWT token or session.
+    Prioritizes JWT token, falls back to session.
+    """
+    # 1. Try to get user from JWT token (API clients)
+    if credentials:
+        username = verify_token(credentials.credentials)
+        if username:
+            try:
+                user = User.get(User.username == username)
+                return user
+            except User.DoesNotExist:
+                pass # User not found for token, try session
+
+    # 2. Fallback to session (Web interface)
+    session_username = request.session.get("username")
+    if session_username:
+        try:
+            user = User.get(User.username == session_username)
+            return user
+        except User.DoesNotExist:
+            pass # User not found in session
+
+    return None
 
 def require_admin(current_user: User = Depends(get_current_user)):
     """Require admin user for endpoint access"""

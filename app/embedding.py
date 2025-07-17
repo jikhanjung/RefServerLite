@@ -341,11 +341,14 @@ def embed_and_store_semantic_chunks(paper_id: str, chunks: List[Dict], chroma_cl
             ids=chunk_ids
         )
         
-        # Store chunk metadata in SQLite
-        logger.info(f"Storing chunk metadata in SQLite...")
+        # Store chunk metadata in SQLite using bulk insert
+        logger.info(f"Storing chunk metadata in SQLite using bulk insert...")
+        
+        # Prepare all SemanticChunk objects for bulk creation
+        chunks_to_save = []
         for i, (chunk, chunk_id) in enumerate(zip(chunks, chunk_ids)):
             try:
-                # Create SemanticChunk record
+                # Create SemanticChunk record (don't save yet)
                 semantic_chunk = SemanticChunk(
                     paper=paper,
                     text=chunk['text'],
@@ -361,13 +364,50 @@ def embed_and_store_semantic_chunks(paper_id: str, chunks: List[Dict], chroma_cl
                 if 'bbox' in chunk and chunk['bbox']:
                     semantic_chunk.set_bbox(chunk['bbox'])
                 
-                semantic_chunk.save()
-                successful_chunk_ids.append(chunk_id)
+                chunks_to_save.append(semantic_chunk)
                 
             except Exception as e:
-                logger.error(f"Failed to save chunk {i} metadata: {str(e)}")
+                logger.error(f"Failed to prepare chunk {i} for bulk insert: {str(e)}")
                 # Don't fail the entire process for one chunk
                 continue
+        
+        # Perform bulk insert in a single transaction
+        if chunks_to_save:
+            try:
+                from .models import db
+                with db.atomic():
+                    SemanticChunk.bulk_create(chunks_to_save, batch_size=100)
+                    # All chunks were successfully saved
+                    successful_chunk_ids = chunk_ids[:len(chunks_to_save)]
+                    logger.info(f"Successfully bulk inserted {len(chunks_to_save)} semantic chunks")
+            except Exception as e:
+                logger.error(f"Failed to bulk insert chunk metadata: {str(e)}")
+                # If bulk insert fails, fall back to individual saves with proper error handling
+                logger.info("Falling back to individual chunk saves...")
+                for i, (chunk, chunk_id) in enumerate(zip(chunks, chunk_ids)):
+                    try:
+                        semantic_chunk = SemanticChunk(
+                            paper=paper,
+                            text=chunk['text'],
+                            page_number=chunk['page_number'],
+                            chunk_index_on_page=chunk['chunk_index_on_page'],
+                            chunk_type=chunk['chunk_type'],
+                            start_char=chunk.get('start_char'),
+                            end_char=chunk.get('end_char'),
+                            embedding_id=chunk_id
+                        )
+                        
+                        if 'bbox' in chunk and chunk['bbox']:
+                            semantic_chunk.set_bbox(chunk['bbox'])
+                        
+                        semantic_chunk.save()
+                        successful_chunk_ids.append(chunk_id)
+                        
+                    except Exception as fallback_error:
+                        logger.error(f"Failed to save chunk {i} in fallback: {str(fallback_error)}")
+                        continue
+        else:
+            logger.warning("No chunks prepared for bulk insert")
         
         logger.info(f"Successfully stored {len(successful_chunk_ids)} semantic chunks for paper {paper_id}")
         return successful_chunk_ids

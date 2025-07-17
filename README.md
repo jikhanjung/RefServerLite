@@ -9,7 +9,9 @@ A streamlined, lightweight PDF repository service with OCR, metadata extraction,
 - **Metadata Extraction**: Rule-based extraction of title, authors, journal, year, and DOI
 - **Semantic Search**: Vector embeddings using BGE-M3 model with ChromaDB
 - **Semantic Chunking**: Hierarchical text segmentation for improved RAG performance
+- **Zotero Integration**: Import papers directly from Zotero libraries with metadata
 - **Admin Dashboard**: Web interface for document management and search
+- **Background Job Monitoring**: Real-time monitoring of processing jobs
 - **Embedding Visualizations**: 2D heatmap fingerprints for embedding analysis
 - **User Authentication**: Basic admin authentication system
 - **RESTful API**: Complete API for integration with other services
@@ -24,6 +26,8 @@ A streamlined, lightweight PDF repository service with OCR, metadata extraction,
 - **Embeddings**: Sentence Transformers (BGE-M3)
 - **Visualizations**: Matplotlib
 - **Authentication**: Passlib with bcrypt
+- **Zotero Integration**: Pyzotero for API access
+- **Configuration**: PyYAML for configuration management
 
 ## Installation
 
@@ -87,7 +91,9 @@ The application will be available at `http://localhost:8000`
 
 **Core APIs:**
 - `POST /api/v1/upload` - Upload PDF file
+- `POST /api/v1/papers/upload_with_metadata` - Upload PDF with Zotero metadata
 - `GET /api/v1/job/{job_id}` - Check processing status
+- `GET /api/v1/jobs` - List all processing jobs (admin)
 - `GET /api/v1/document/{doc_id}` - Get document details
 - `GET /api/v1/search` - Search documents (keyword/semantic/chunks)
 
@@ -105,6 +111,7 @@ The application will be available at `http://localhost:8000`
 - `/` - Upload page
 - `/login` - Admin login
 - `/admin` - Admin dashboard with document list and search
+- `/admin/jobs` - Background job monitoring dashboard
 - `/admin/document/{doc_id}` - Document detail view with tabs (Pages/Chunks)
 
 ## Processing Pipeline
@@ -195,6 +202,10 @@ RefServerLite/
 │   ├── pdfs/            # Uploaded PDF files
 │   ├── refserver.db     # SQLite database
 │   └── chromadb/        # ChromaDB data
+├── scripts/
+│   ├── import_from_zotero.py  # Zotero import script
+│   ├── config.yml.example     # Configuration template
+│   └── config.yml            # Active configuration
 ├── devlog/              # Development logs
 ├── migrations/          # Database migrations
 ├── tests/               # Test files
@@ -214,6 +225,26 @@ pytest tests/
 3. Update API documentation
 4. Follow existing code patterns
 
+## Zotero Integration
+
+### Setup
+
+1. Get your Zotero API credentials at https://www.zotero.org/settings/keys
+2. Copy `scripts/config.yml.example` to `scripts/config.yml`
+3. Configure your Zotero library ID and API key
+4. Run the import script:
+
+```bash
+python scripts/import_from_zotero.py --collection "My Collection"
+```
+
+### Import Options
+
+- `--dry-run`: Preview import without processing
+- `--collection`: Import from specific collection (by name or ID)
+- `--limit`: Limit number of items to import
+- `--cache-stats`: Show cache statistics
+
 ## Troubleshooting
 
 ### Common Issues
@@ -222,6 +253,8 @@ pytest tests/
 2. **CUDA issues**: Set `CUDA_VISIBLE_DEVICES=""` to force CPU usage
 3. **Memory issues**: Large PDFs may require more RAM for processing
 4. **Port conflicts**: Change port in uvicorn command if 8000 is busy
+5. **Database locked**: Resolved with WAL mode and bulk insert optimizations
+6. **Zotero API errors**: Check your API key and library permissions
 
 ### Logs
 

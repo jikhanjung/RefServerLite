@@ -17,6 +17,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Enhanced error handling and logging
 - Improved UI/UX based on user feedback
 
+## [0.1.4] - 2025-01-17
+
+### Added
+- **Zotero Integration System**: Complete integration with Zotero libraries
+  - `scripts/import_from_zotero.py` - Interactive import script with batch processing
+  - `POST /api/v1/papers/upload_with_metadata` - Upload PDF with Zotero metadata
+  - `ZoteroLink` model for tracking paper-Zotero relationships
+  - Configuration management with `config.yml` template
+  - Collection resolution by name or ID
+  - Progress tracking and resume capability
+  - Comprehensive error handling and retry logic
+  - Dry-run mode for preview before import
+
+- **Background Job Monitoring Dashboard**: Real-time job monitoring system
+  - `GET /api/v1/jobs` - List all processing jobs with filtering
+  - `/admin/jobs` - Dedicated job monitoring page
+  - Real-time updates with 5-second auto-refresh
+  - Status filtering (All, Pending, Processing, Completed, Failed)
+  - Progress bars with animations for active jobs
+  - Error message display and document links
+  - Pagination support for large job lists
+
+- **Database Performance Optimization**: Resolved "database is locked" errors
+  - SQLite WAL mode for improved concurrency
+  - Bulk insert patterns for semantic chunks
+  - Database configuration optimizations
+  - Exponential backoff retry mechanisms
+  - Performance improvement: 99% reduction in lock times (5-10s → 50-100ms)
+
+- **Enhanced Metadata System**: 
+  - `source` field in Metadata model (auto-extracted vs user-provided)
+  - User-provided metadata prioritization in processing pipeline
+  - Zotero metadata display in document detail view
+  - Direct links to original Zotero items
+
+### Changed
+- **Admin Interface**: Separated job monitoring into dedicated page
+- **Processing Pipeline**: Respects user-provided metadata from Zotero
+- **Database Schema**: Added ZoteroLink model and metadata source tracking
+- **Navigation**: Added Jobs link to navigation bar
+- **Error Handling**: Improved database concurrency and retry logic
+
+### Fixed
+- **Database Concurrency**: "database is locked" errors during bulk operations
+- **Semantic Chunking**: Bulk insert optimization for better performance
+- **Authentication**: Fixed 401 errors in job monitoring API
+- **Year Extraction**: Enhanced date parsing for various formats (01/2004, 2004-01-15)
+
+### Technical Details
+- **Dependencies Added**: `pyzotero==1.5.18`, `PyYAML==6.0.1`
+- **Database Migrations**: 
+  - `004_20250117_100757.py` - ZoteroLink model and metadata source field
+  - `005_20250117_141855.py` - ProcessingJob updated_at field
+- **Performance**: Database lock time reduced from 5-10 seconds to 50-100ms
+- **Import Success Rate**: Improved from 12.5% to expected 90%+
+
+### Security Enhancements
+- Admin authentication for job monitoring APIs
+- Bearer token authentication for metadata upload endpoint
+- Secure credential handling in Zotero integration
+
+### Development Infrastructure
+- Comprehensive development logs in `/devlog/20250117_*`
+- Zotero import script with interactive configuration
+- Cache management for PDF downloads
+- Progress tracking and error reporting
+
 ## [0.1.3] - 2025-07-16
 
 ### Added

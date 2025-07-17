@@ -19,3 +19,5 @@ bcrypt==4.0.1
 aiofiles==23.2.1
 itsdangerous==2.1.2
 matplotlib==3.7.2
+pyzotero==1.5.18
+PyYAML==6.0.1

@@ -10,10 +10,10 @@ from pathlib import Path
 from datetime import timedelta
 import numpy as np
 
-from .models import init_database, Paper, Metadata, ProcessingJob, User, PageText, SemanticChunk
+from .models import init_database, Paper, Metadata, ProcessingJob, User, PageText, SemanticChunk, ZoteroLink
 from .db import get_chromadb_client, get_or_create_collection, get_embedding_from_chroma
 from .pipeline import start_background_processor
-from .auth import create_access_token, require_admin, check_session_auth
+from .auth import create_access_token, require_admin, check_session_auth, get_current_user
 from .visualize import visualize_embedding_bar, visualize_embedding_heatmap, visualize_embedding_histogram
 from .visualize_3d import visualize_embedding_3d_bidirectional, visualize_embedding_3d_unidirectional, visualize_embedding_3d_surface
 
@@ -184,9 +184,112 @@ async def upload_pdf(file: UploadFile = File(...)):
             file_path.unlink()
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
+@app.post("/api/v1/papers/upload_with_metadata")
+async def upload_with_metadata(
+    file: UploadFile = File(...),
+    title: str = Form(...),
+    authors: str = Form(...),  # JSON string
+    year: Optional[int] = Form(None),
+    zotero_key: Optional[str] = Form(None),
+    zotero_library_id: Optional[str] = Form(None),
+    zotero_version: Optional[int] = Form(None),
+    collection_keys: Optional[str] = Form(None),  # JSON string
+    tags: Optional[str] = Form(None),  # JSON string
+    current_user: User = Depends(get_current_user)
+):
+    """Upload a PDF file with metadata (requires authentication)"""
+    # Check admin permission
+    if not current_user or not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    # Validate file type
+    if not file.filename.endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Only PDF files are allowed")
+    
+    # Check for duplicate Zotero key if provided
+    if zotero_key:
+        existing_link = ZoteroLink.select().where(ZoteroLink.zotero_key == zotero_key).first()
+        if existing_link:
+            raise HTTPException(
+                status_code=409, 
+                detail=f"Document with Zotero key '{zotero_key}' already exists (doc_id: {existing_link.paper.doc_id})"
+            )
+    
+    # Generate unique IDs
+    job_id = str(uuid.uuid4())
+    doc_id = str(uuid.uuid4())
+    
+    # Save uploaded file
+    upload_dir = Path("refdata/pdfs")
+    upload_dir.mkdir(exist_ok=True)
+    file_path = upload_dir / f"{doc_id}_{file.filename}"
+    
+    try:
+        contents = await file.read()
+        with open(file_path, 'wb') as f:
+            f.write(contents)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
+    
+    try:
+        # Create Paper entry
+        paper = Paper.create(
+            doc_id=doc_id,
+            filename=file.filename,
+            file_path=str(file_path)
+        )
+        
+        # Create Metadata entry with user-provided data
+        metadata = Metadata.create(
+            paper=paper,
+            title=title,
+            authors=authors,  # Already JSON string
+            year=year,
+            source='user_api'  # Mark as user-provided
+        )
+        
+        # Create ZoteroLink if Zotero data provided
+        if zotero_key and zotero_library_id:
+            zotero_link = ZoteroLink.create(
+                paper=paper,
+                zotero_key=zotero_key,
+                library_id=zotero_library_id,
+                zotero_version=zotero_version or 0,
+                collection_keys=collection_keys,
+                tags=tags
+            )
+        
+        # Create ProcessingJob entry
+        job = ProcessingJob.create(
+            job_id=job_id,
+            paper=paper,
+            filename=file.filename,
+            status='uploaded'
+        )
+        
+        # Start processing
+        job.status = 'processing'
+        job.save()
+        
+        return {
+            "job_id": job_id,
+            "doc_id": doc_id,
+            "filename": file.filename,
+            "message": "File uploaded successfully with metadata. Processing started.",
+            "status": "processing"
+        }
+        
+    except Exception as e:
+        # Clean up file if database entry fails
+        if file_path.exists():
+            file_path.unlink()
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
 @app.get("/api/v1/job/{job_id}")
-async def get_job_status(job_id: str):
-    """Get the status of a processing job"""
+async def get_job_status(job_id: str, current_user: User = Depends(get_current_user)):
+    """Get the status of a processing job (admin only)"""
+    # Require admin access
+    require_admin(current_user)
     try:
         job = ProcessingJob.get(ProcessingJob.job_id == job_id)
         response = {
@@ -205,6 +308,78 @@ async def get_job_status(job_id: str):
         return response
     except ProcessingJob.DoesNotExist:
         raise HTTPException(status_code=404, detail="Job not found")
+
+@app.get("/api/v1/jobs")
+async def get_jobs(
+    request: Request,
+    status: Optional[str] = None,
+    limit: Optional[int] = 100,
+    offset: Optional[int] = 0,
+    order_by: Optional[str] = "created_at",
+    current_user: User = Depends(get_current_user)
+):
+    """Get list of processing jobs (admin only)"""
+    # Require admin access
+    require_admin(current_user)
+    
+    try:
+        # Build query
+        query = ProcessingJob.select()
+        
+        # Apply status filter if provided
+        if status:
+            query = query.where(ProcessingJob.status == status)
+        
+        # Apply ordering
+        if order_by == "created_at":
+            query = query.order_by(ProcessingJob.created_at.desc())
+        elif order_by == "status":
+            query = query.order_by(ProcessingJob.status)
+        else:
+            query = query.order_by(ProcessingJob.created_at.desc())
+        
+        # Apply pagination
+        query = query.offset(offset).limit(limit)
+        
+        # Execute query and format response
+        jobs = []
+        for job in query:
+            job_data = {
+                "job_id": job.job_id,
+                "filename": job.filename,
+                "status": job.status,
+                "current_step": job.current_step,
+                "progress_percentage": job.progress_percentage,
+                "created_at": job.created_at.isoformat() if job.created_at else None,
+                "updated_at": job.updated_at.isoformat() if job.updated_at else None
+            }
+            
+            # Add result or error info
+            if job.status == 'completed' and job.paper:
+                job_data["result"] = {"doc_id": job.paper.doc_id}
+            elif job.status == 'failed' and job.error_message:
+                job_data["error"] = job.error_message
+                
+            jobs.append(job_data)
+        
+        # Get total count for pagination info
+        total_query = ProcessingJob.select()
+        if status:
+            total_query = total_query.where(ProcessingJob.status == status)
+        total_count = total_query.count()
+        
+        return {
+            "jobs": jobs,
+            "pagination": {
+                "total": total_count,
+                "limit": limit,
+                "offset": offset,
+                "has_more": offset + limit < total_count
+            }
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve jobs: {str(e)}")
 
 @app.get("/api/v1/document/{doc_id}")
 async def get_document(doc_id: str):
@@ -852,6 +1027,61 @@ async def admin_dashboard(request: Request):
         "documents": documents
     })
 
+@app.get("/admin/jobs", response_class=HTMLResponse)
+async def admin_jobs_dashboard(request: Request):
+    """Display admin jobs dashboard showing processing jobs"""
+    # Check authentication
+    auth_result = require_session_admin_redirect(request)
+    if isinstance(auth_result, RedirectResponse):
+        return auth_result
+    
+    # Get all jobs with pagination
+    page = int(request.query_params.get("page", 1))
+    per_page = 50
+    offset = (page - 1) * per_page
+    
+    # Get jobs ordered by creation date
+    total_jobs = ProcessingJob.select().count()
+    jobs_query = ProcessingJob.select().order_by(ProcessingJob.created_at.desc()).offset(offset).limit(per_page)
+    
+    jobs = []
+    for job in jobs_query:
+        job_data = {
+            "job_id": job.job_id,
+            "filename": job.filename,
+            "status": job.status,
+            "current_step": job.current_step,
+            "progress_percentage": job.progress_percentage,
+            "created_at": job.created_at,
+            "updated_at": job.updated_at,
+            "error_message": job.error_message,
+            "doc_id": job.paper.doc_id if job.paper else None,
+            "steps": job.get_step_info()
+        }
+        jobs.append(job_data)
+    
+    # Calculate pagination info
+    total_pages = (total_jobs + per_page - 1) // per_page
+    has_prev = page > 1
+    has_next = page < total_pages
+    
+    # Get status summary
+    status_counts = {}
+    for status in ['uploaded', 'processing', 'completed', 'failed']:
+        count = ProcessingJob.select().where(ProcessingJob.status == status).count()
+        status_counts[status] = count
+    
+    return templates.TemplateResponse("jobs.html", {
+        "request": request,
+        "jobs": jobs,
+        "current_page": page,
+        "total_pages": total_pages,
+        "total_jobs": total_jobs,
+        "has_prev": has_prev,
+        "has_next": has_next,
+        "status_counts": status_counts
+    })
+
 @app.get("/admin/document/{doc_id}", response_class=HTMLResponse)
 async def admin_document_detail(request: Request, doc_id: str):
     """Display detailed view of a document"""
@@ -874,6 +1104,13 @@ async def admin_document_detail(request: Request, doc_id: str):
         
         # Get page texts
         page_texts = list(paper.page_texts.order_by(PageText.page_number))
+        
+        # Get Zotero link if exists
+        zotero_link = None
+        try:
+            zotero_link = ZoteroLink.get(ZoteroLink.paper == paper)
+        except ZoteroLink.DoesNotExist:
+            pass
         
         # Get page embeddings and document embedding from ChromaDB
         page_embeddings = {}
@@ -914,7 +1151,8 @@ async def admin_document_detail(request: Request, doc_id: str):
             "jobs": jobs,
             "page_texts": page_texts,
             "page_embeddings": page_embeddings,
-            "document_embedding": document_embedding
+            "document_embedding": document_embedding,
+            "zotero_link": zotero_link
         })
     except Paper.DoesNotExist:
         raise HTTPException(status_code=404, detail="Document not found")

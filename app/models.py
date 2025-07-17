@@ -57,6 +57,7 @@ class Metadata(BaseModel):
     year = IntegerField(null=True)
     abstract = TextField(null=True)
     doi = CharField(null=True)
+    source = CharField(default='extracted', index=True)  # 'extracted' or 'user_api'
     created_at = DateTimeField(default=datetime.datetime.now)
     
     def get_authors(self) -> List[str]:
@@ -81,7 +82,12 @@ class ProcessingJob(BaseModel):
     progress_percentage = IntegerField(default=0)
     error_message = TextField(null=True)
     created_at = DateTimeField(default=datetime.datetime.now)
+    updated_at = DateTimeField(default=datetime.datetime.now) # <-- 이 줄 추가
     completed_at = DateTimeField(null=True)
+    
+    def save(self, *args, **kwargs): # <-- 이 save 메서드 추가
+        self.updated_at = datetime.datetime.now()
+        return super().save(*args, **kwargs)
     
     # Detailed step status tracking
     ocr_status = CharField(default='pending')  # pending, running, completed, failed
@@ -242,10 +248,45 @@ class SemanticChunk(BaseModel):
             (('chunk_type',), False),
         )
 
+class ZoteroLink(BaseModel):
+    paper = ForeignKeyField(Paper, backref='zotero_link', unique=True, on_delete='CASCADE')
+    zotero_key = CharField(unique=True, index=True)
+    zotero_version = IntegerField()
+    library_id = CharField()
+    collection_keys = TextField(null=True)  # JSON array
+    tags = TextField(null=True)  # JSON array
+    imported_at = DateTimeField(default=datetime.datetime.now)
+    
+    def get_collection_keys(self) -> List[str]:
+        """Get collection keys as a list"""
+        if self.collection_keys:
+            try:
+                return json.loads(self.collection_keys)
+            except json.JSONDecodeError:
+                return []
+        return []
+    
+    def set_collection_keys(self, keys: List[str]):
+        """Set collection keys from a list"""
+        self.collection_keys = json.dumps(keys)
+    
+    def get_tags(self) -> List[str]:
+        """Get tags as a list"""
+        if self.tags:
+            try:
+                return json.loads(self.tags)
+            except json.JSONDecodeError:
+                return []
+        return []
+    
+    def set_tags(self, tags: List[str]):
+        """Set tags from a list"""
+        self.tags = json.dumps(tags)
+
 def create_tables():
     """Create all database tables"""
     with db:
-        db.create_tables([User, Paper, Metadata, ProcessingJob, PageText, SemanticChunk])
+        db.create_tables([User, Paper, Metadata, ProcessingJob, PageText, SemanticChunk, ZoteroLink])
 
 def create_admin_user():
     """Create default admin user if it doesn't exist"""
@@ -265,6 +306,18 @@ def run_migrations(database_path: str):
 def init_database(database_path: str):
     """Initialize database connection"""
     db.init(database_path)
+    
+    # Configure SQLite for better concurrency and performance
+    try:
+        print("🔧 Configuring SQLite for optimal performance...")
+        db.execute_sql('PRAGMA journal_mode=WAL;')        # Enable WAL mode for better concurrency
+        db.execute_sql('PRAGMA synchronous=NORMAL;')      # Balanced durability vs performance
+        db.execute_sql('PRAGMA cache_size=1000;')         # 1MB cache
+        db.execute_sql('PRAGMA temp_store=memory;')       # Store temp tables in memory
+        db.execute_sql('PRAGMA busy_timeout=30000;')      # 30 second timeout for locks
+        print("✅ SQLite configuration applied successfully")
+    except Exception as e:
+        print(f"⚠️ Failed to configure SQLite settings: {str(e)}")
     
     # Run migrations
     try:

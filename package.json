@@ -1,6 +1,6 @@
 {
   "name": "refserverlite",
-  "version": "1.0.0",
+  "version": "0.1.4",
   "description": "A streamlined, lightweight PDF repository service with OCR, metadata extraction, and semantic search capabilities.",
   "main": "index.js",
   "directories": {
