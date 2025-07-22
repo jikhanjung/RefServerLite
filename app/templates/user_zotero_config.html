@@ -1,0 +1,420 @@
+{% extends "user_base.html" %}
+
+{% block title %}Zotero Settings - RefServerLite{% endblock %}
+
+{% block breadcrumb %}
+<li class="breadcrumb-item">Zotero Integration</li>
+<li class="breadcrumb-item active">Settings</li>
+{% endblock %}
+
+{% block content %}
+<div class="page-title">
+    <h1>Zotero Settings</h1>
+    <p class="page-subtitle">Configure your personal Zotero API access</p>
+</div>
+
+<!-- Connection Status -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="user-card" id="connectionStatus">
+            <div class="user-card-header">
+                <h5 class="mb-0">Connection Status</h5>
+            </div>
+            <div class="user-card-body">
+                <div id="statusContent">
+                    <div class="text-center py-3">
+                        <div class="spinner-border text-primary" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                        <p class="mt-2 text-muted">Checking connection status...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Configuration Form -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="user-card">
+            <div class="user-card-header">
+                <h5 class="mb-0">API Configuration</h5>
+            </div>
+            <div class="user-card-body">
+                <form id="zoteroConfigForm">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label for="userID" class="form-label">User ID</label>
+                                <input type="text" class="form-control" id="userID" name="user_id" 
+                                       placeholder="Your Zotero user ID" required>
+                                <div class="form-text">
+                                    Find your User ID in your Zotero profile URL (e.g., zotero.org/users/12345)
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="mb-3">
+                                <label for="libraryType" class="form-label">Library Type</label>
+                                <select class="form-select" id="libraryType" name="library_type" required>
+                                    <option value="user">Personal Library</option>
+                                    <option value="group">Group Library</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="mb-3" id="libraryIDGroup" style="display: none;">
+                        <label for="libraryID" class="form-label">Library ID</label>
+                        <input type="text" class="form-control" id="libraryID" name="library_id" 
+                               placeholder="Group library ID">
+                        <div class="form-text">
+                            Required only for group libraries. Find this in the group's URL.
+                        </div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="apiKey" class="form-label">
+                            API Key
+                            <span class="badge ms-2" id="apiKeyStatus"></span>
+                        </label>
+                        <div class="input-group">
+                            <input type="password" class="form-control" id="apiKey" name="api_key" 
+                                   placeholder="Your Zotero API key">
+                            <button class="btn btn-outline-secondary" type="button" id="toggleApiKey">
+                                <i class="bi bi-eye" id="toggleIcon"></i>
+                            </button>
+                        </div>
+                        <div class="form-text" id="apiKeyHelp">
+                            Create an API key at <a href="https://www.zotero.org/settings/keys" target="_blank">zotero.org/settings/keys</a>
+                        </div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="autoSync" name="auto_sync">
+                            <label class="form-check-label" for="autoSync">
+                                Enable automatic synchronization
+                            </label>
+                            <div class="form-text">
+                                Automatically sync your Zotero library with RefServerLite
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="d-flex gap-2">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-check2 me-2"></i>Save Configuration
+                        </button>
+                        <button type="button" class="btn btn-outline-secondary" onclick="testConnection()">
+                            <i class="bi bi-wifi me-2"></i>Test Connection
+                        </button>
+                        <button type="button" class="btn btn-outline-danger" onclick="clearConfiguration()">
+                            <i class="bi bi-trash me-2"></i>Clear Config
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Library Management Section -->
+<div class="row mb-4" id="libraryManagementSection" style="display: none;">
+    <div class="col-12">
+        <div class="user-card">
+            <div class="user-card-header">
+                <h5 class="mb-0">Library Management</h5>
+            </div>
+            <div class="user-card-body">
+                <div class="alert alert-warning">
+                    <i class="bi bi-exclamation-triangle me-2"></i>
+                    <strong>Danger Zone:</strong> These actions will permanently delete your Zotero library data from RefServerLite.
+                </div>
+                
+                <div class="d-flex gap-2">
+                    <button type="button" class="btn btn-danger" onclick="clearZoteroLibrary()">
+                        <i class="bi bi-database-x me-2"></i>Clear Zotero Library
+                    </button>
+                    <div class="ms-3">
+                        <small class="text-muted">
+                            This will delete all synced Zotero items and collections from RefServerLite.<br>
+                            Your original Zotero library will not be affected.
+                        </small>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Help Section -->
+<div class="row">
+    <div class="col-12">
+        <div class="user-card">
+            <div class="user-card-header">
+                <h5 class="mb-0">Setup Instructions</h5>
+            </div>
+            <div class="user-card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <h6>Getting Your User ID:</h6>
+                        <ol>
+                            <li>Go to <a href="https://www.zotero.org" target="_blank">zotero.org</a></li>
+                            <li>Log in to your account</li>
+                            <li>Click on your username in the top right</li>
+                            <li>Your User ID is the number in the URL</li>
+                        </ol>
+                    </div>
+                    <div class="col-md-6">
+                        <h6>Creating an API Key:</h6>
+                        <ol>
+                            <li>Go to <a href="https://www.zotero.org/settings/keys" target="_blank">API Keys settings</a></li>
+                            <li>Click "Create new private key"</li>
+                            <li>Set appropriate permissions</li>
+                            <li>Copy the generated key</li>
+                        </ol>
+                    </div>
+                </div>
+                
+                <div class="alert alert-info mt-3">
+                    <i class="bi bi-info-circle me-2"></i>
+                    <strong>Permissions needed:</strong> Your API key should have "Allow library access" 
+                    and "Allow write access" permissions for full functionality.
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    loadCurrentConfig();
+    setupFormHandlers();
+});
+
+function setupFormHandlers() {
+    // Library type change handler
+    document.getElementById('libraryType').addEventListener('change', function() {
+        const libraryIDGroup = document.getElementById('libraryIDGroup');
+        if (this.value === 'group') {
+            libraryIDGroup.style.display = 'block';
+            document.getElementById('libraryID').required = true;
+        } else {
+            libraryIDGroup.style.display = 'none';
+            document.getElementById('libraryID').required = false;
+        }
+    });
+    
+    // API key visibility toggle
+    document.getElementById('toggleApiKey').addEventListener('click', function() {
+        const apiKeyInput = document.getElementById('apiKey');
+        const toggleIcon = document.getElementById('toggleIcon');
+        
+        if (apiKeyInput.type === 'password') {
+            apiKeyInput.type = 'text';
+            toggleIcon.className = 'bi bi-eye-slash';
+        } else {
+            apiKeyInput.type = 'password';
+            toggleIcon.className = 'bi bi-eye';
+        }
+    });
+    
+    // Form submission
+    handleFormSubmit('zoteroConfigForm', '/api/v1/users/me/zotero_config', {
+        onSuccess: function(response) {
+            showNotification('Zotero configuration saved successfully!', 'success');
+            loadCurrentConfig();
+        },
+        onError: function(error) {
+            showNotification('Failed to save configuration: ' + error.message, 'danger');
+        }
+    });
+}
+
+async function loadCurrentConfig() {
+    try {
+        showLoading('statusContent', 'Loading configuration...');
+        
+        const response = await fetchUserData('/api/v1/users/me/zotero_config');
+        
+        if (response.configured) {
+            // Fill form with current values
+            document.getElementById('userID').value = response.user_id || '';
+            document.getElementById('libraryType').value = response.library_type || 'user';
+            document.getElementById('libraryID').value = response.library_id || '';
+            document.getElementById('autoSync').checked = response.auto_sync || false;
+            
+            // Update API key status and placeholder
+            const apiKeyInput = document.getElementById('apiKey');
+            const apiKeyStatus = document.getElementById('apiKeyStatus');
+            const apiKeyHelp = document.getElementById('apiKeyHelp');
+            
+            // Check if API key is configured (if library_id is set, API key should be set too)
+            if (response.library_id && response.user_id) {
+                apiKeyStatus.className = 'badge bg-success ms-2';
+                apiKeyStatus.innerHTML = '<i class="bi bi-check-circle"></i> Configured';
+                apiKeyInput.placeholder = 'Enter new API key to update (leave blank to keep existing)';
+                apiKeyInput.required = false;
+                apiKeyHelp.innerHTML = 'API key is currently set. Only enter a new key if you want to update it.';
+            } else {
+                apiKeyStatus.className = 'badge bg-warning ms-2';
+                apiKeyStatus.innerHTML = '<i class="bi bi-x-circle"></i> Not Set';
+                apiKeyInput.placeholder = 'Your Zotero API key';
+                apiKeyInput.required = true;
+                apiKeyHelp.innerHTML = 'Create an API key at <a href="https://www.zotero.org/settings/keys" target="_blank">zotero.org/settings/keys</a>';
+            }
+            
+            // Trigger library type change to show/hide library ID field
+            document.getElementById('libraryType').dispatchEvent(new Event('change'));
+            
+            // Show connection status
+            document.getElementById('statusContent').innerHTML = `
+                <div class="d-flex align-items-center">
+                    <div class="me-3">
+                        <div class="bg-success rounded-circle d-inline-flex align-items-center justify-content-center" 
+                             style="width: 48px; height: 48px;">
+                            <i class="bi bi-check-lg text-white fs-5"></i>
+                        </div>
+                    </div>
+                    <div>
+                        <h6 class="mb-1">Connected to Zotero</h6>
+                        <p class="text-muted mb-0">
+                            ${response.library_type === 'user' ? 'Personal Library' : 'Group Library'} • 
+                            User ID: ${response.user_id}
+                            ${response.library_id ? ` • Library ID: ${response.library_id}` : ''}
+                        </p>
+                    </div>
+                    <div class="ms-auto">
+                        <button class="btn btn-sm btn-outline-primary" onclick="testConnection()">
+                            Test Connection
+                        </button>
+                    </div>
+                </div>
+            `;
+            
+            // Show library management section for configured users
+            document.getElementById('libraryManagementSection').style.display = 'block';
+        } else {
+            // Update API key status for not configured
+            const apiKeyStatus = document.getElementById('apiKeyStatus');
+            const apiKeyInput = document.getElementById('apiKey');
+            const apiKeyHelp = document.getElementById('apiKeyHelp');
+            
+            apiKeyStatus.className = 'badge bg-secondary ms-2';
+            apiKeyStatus.innerHTML = '<i class="bi bi-x-circle"></i> Not Set';
+            apiKeyInput.placeholder = 'Your Zotero API key';
+            apiKeyInput.required = true;
+            apiKeyHelp.innerHTML = 'Create an API key at <a href="https://www.zotero.org/settings/keys" target="_blank">zotero.org/settings/keys</a>';
+            
+            // Show not configured status
+            document.getElementById('statusContent').innerHTML = `
+                <div class="d-flex align-items-center">
+                    <div class="me-3">
+                        <div class="bg-warning rounded-circle d-inline-flex align-items-center justify-content-center" 
+                             style="width: 48px; height: 48px;">
+                            <i class="bi bi-exclamation-triangle text-white fs-5"></i>
+                        </div>
+                    </div>
+                    <div>
+                        <h6 class="mb-1">Not Connected</h6>
+                        <p class="text-muted mb-0">Configure your Zotero API credentials to get started</p>
+                    </div>
+                </div>
+            `;
+            
+            // Hide library management section for non-configured users
+            document.getElementById('libraryManagementSection').style.display = 'none';
+        }
+    } catch (error) {
+        console.error('Error loading config:', error);
+        showError('statusContent', 'Failed to load configuration');
+    }
+}
+
+async function testConnection() {
+    try {
+        showNotification('Testing connection...', 'info');
+        
+        const response = await fetchUserData('/api/v1/users/me/zotero/test', {
+            method: 'POST'
+        });
+        
+        if (response.success) {
+            showNotification('Connection test successful!', 'success');
+            loadCurrentConfig();
+        } else {
+            showNotification('Connection test failed: ' + response.message, 'danger');
+        }
+    } catch (error) {
+        console.error('Connection test error:', error);
+        showNotification('Connection test failed: ' + error.message, 'danger');
+    }
+}
+
+function clearConfiguration() {
+    showConfirm('Are you sure you want to clear your Zotero configuration?', async function() {
+        try {
+            await fetchUserData('/api/v1/users/me/zotero_config', {
+                method: 'DELETE'
+            });
+            
+            showNotification('Configuration cleared successfully!', 'success');
+            
+            // Clear form
+            document.getElementById('zoteroConfigForm').reset();
+            
+            // Reload status
+            loadCurrentConfig();
+        } catch (error) {
+            console.error('Error clearing config:', error);
+            showNotification('Failed to clear configuration: ' + error.message, 'danger');
+        }
+    });
+}
+
+async function clearZoteroLibrary() {
+    showConfirm(
+        'Are you sure you want to clear your entire Zotero library from RefServerLite?<br><br>' +
+        '<strong>This will permanently delete:</strong><br>' +
+        '• All synced Zotero items<br>' +
+        '• All synced collections<br>' +
+        '• All associated RefServerLite papers<br><br>' +
+        '<em>Your original Zotero library will not be affected.</em>',
+        async function() {
+            try {
+                showNotification('Clearing Zotero library...', 'info');
+                
+                const response = await fetchUserData('/api/v1/users/me/zotero/library', {
+                    method: 'DELETE'
+                });
+                
+                if (response.success) {
+                    showNotification(
+                        `Zotero library cleared successfully! ` +
+                        `Deleted ${response.items_deleted} items and ${response.collections_deleted} collections.`,
+                        'success'
+                    );
+                } else {
+                    showNotification('Failed to clear library: ' + response.message, 'danger');
+                }
+            } catch (error) {
+                console.error('Error clearing library:', error);
+                if (error.message.includes('sync is in progress')) {
+                    showNotification(
+                        'Cannot clear library while sync is in progress. ' +
+                        'Please cancel the running sync job from your <a href="/dashboard">dashboard</a> first.',
+                        'warning'
+                    );
+                } else {
+                    showNotification('Failed to clear library: ' + error.message, 'danger');
+                }
+            }
+        }
+    );
+}
+</script>
+{% endblock %}

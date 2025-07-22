@@ -3,6 +3,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 import numpy as np
+import datetime
 
 from .models import Paper, Metadata, ProcessingJob, PageText, SemanticChunk
 from .ocr import process_pdf_ocr, clean_extracted_text, extract_structured_text
@@ -66,18 +67,27 @@ class PDFProcessingPipeline:
                 print(f"📖 Starting OCR processing...")
                 await self._process_ocr(job, paper)
                 print(f"✅ OCR processing completed")
+                await asyncio.sleep(0.2)  # Brief pause after CPU-intensive OCR
                 
                 # Step 2: Metadata Extraction
                 print(f"🔍 Starting metadata extraction...")
                 await self._extract_metadata(job, paper)
                 print(f"✅ Metadata extraction completed")
+                await asyncio.sleep(0.1)  # Brief pause
                 
                 # Step 3: Embedding Generation
                 print(f"🧠 Starting embedding generation...")
                 await self._generate_embeddings(job, paper)
                 print(f"✅ Embedding generation completed")
+                await asyncio.sleep(0.3)  # Longer pause after CPU-intensive embedding
                 
-                # Step 4: Semantic Chunking (Optional, non-blocking)
+                # Step 4: Duplicate Detection (Optional, non-blocking)
+                print(f"🔍 Starting duplicate detection...")
+                await self._check_duplicates(job, paper)
+                print(f"✅ Duplicate detection completed")
+                await asyncio.sleep(0.1)  # Brief pause
+                
+                # Step 5: Semantic Chunking (Optional, non-blocking)
                 print(f"🔗 Starting semantic chunking...")
                 await self._process_semantic_chunks(job, paper)
                 print(f"✅ Semantic chunking completed")
@@ -123,6 +133,10 @@ class PDFProcessingPipeline:
                 if not created:
                     page_text_obj.text = page_text
                     page_text_obj.save()
+                
+                # Add small delay every 10 pages to reduce DB pressure
+                if page_num % 10 == 0:
+                    await asyncio.sleep(0.05)  # 50ms pause every 10 pages
             
             # For backward compatibility, also store concatenated text
             full_text = "\n\n".join(page_texts)
@@ -241,7 +255,7 @@ class PDFProcessingPipeline:
             
             # Add page-level embeddings to ChromaDB
             print(f"💾 Storing {len(page_embeddings)} page embeddings in ChromaDB...")
-            for page_num, page_embedding in page_embeddings:
+            for i, (page_num, page_embedding) in enumerate(page_embeddings):
                 page_metadata = base_metadata.copy()
                 page_metadata.update({
                     'page_number': page_num,
@@ -259,6 +273,10 @@ class PDFProcessingPipeline:
                     embedding=page_embedding.tolist(),
                     metadata=page_metadata
                 )
+                
+                # Add small delay every 5 embeddings to reduce ChromaDB pressure
+                if (i + 1) % 5 == 0:
+                    await asyncio.sleep(0.05)  # 50ms pause every 5 embeddings
             
             # Add document-level embedding to ChromaDB
             print(f"💾 Storing document-level embedding in ChromaDB...")
@@ -291,6 +309,45 @@ class PDFProcessingPipeline:
             job.update_step_status('embedding', 'failed', str(e))
             logger.error(f"Embedding generation failed for document {paper.doc_id}: {str(e)}")
             raise
+
+    async def _check_duplicates(self, job: ProcessingJob, paper: Paper):
+        """
+        Duplicate detection step - Check for potential duplicates using embedding similarity
+        This is a non-critical step that won't fail the entire pipeline
+        """
+        try:
+            print(f"🔍 Starting duplicate detection for document {paper.doc_id}")
+            logger.info(f"Starting duplicate detection for document {paper.doc_id}")
+            
+            # Import the duplicate detection function from main.py
+            from .main import detect_duplicates_for_paper
+            
+            # Run duplicate detection
+            duplicates_found = await detect_duplicates_for_paper(paper, similarity_threshold=0.85)
+            
+            # Update paper duplicate fields
+            paper.duplicate_check_completed = True
+            paper.duplicate_checked_at = datetime.datetime.now()
+            paper.has_potential_duplicates = duplicates_found > 0
+            paper.save()
+            
+            if duplicates_found > 0:
+                print(f"⚠️ Found {duplicates_found} potential duplicates for {paper.filename}")
+                logger.warning(f"Found {duplicates_found} potential duplicates for document {paper.doc_id}")
+            else:
+                print(f"✅ No duplicates found for {paper.filename}")
+                logger.info(f"No duplicates found for document {paper.doc_id}")
+            
+        except Exception as e:
+            # Don't fail the entire pipeline for duplicate detection errors
+            print(f"⚠️ Duplicate detection failed for {paper.filename}: {str(e)}")
+            logger.error(f"Duplicate detection failed for document {paper.doc_id}: {str(e)}")
+            
+            # Still mark as completed but with error indication
+            paper.duplicate_check_completed = True
+            paper.duplicate_checked_at = datetime.datetime.now()
+            paper.has_potential_duplicates = False
+            paper.save()
 
     async def _process_semantic_chunks(self, job: ProcessingJob, paper: Paper):
         """
@@ -386,14 +443,25 @@ async def process_pending_jobs():
     """Process all pending jobs in the background"""
     print("🔄 Background job processor starting...")
     logger.info("Starting background job processor...")
+    
+    # Lower the process priority to be more background-friendly
+    import os
+    try:
+        # Set process to low priority (nice value 10)
+        os.nice(10)
+        print("📉 Set background job processor to low priority")
+    except OSError:
+        print("⚠️ Could not set process priority (may require permissions)")
+    
     pipeline = PDFProcessingPipeline()
     
     while True:
         try:
-            # Get pending jobs (both uploaded and processing status)
+            # Get pending jobs (both uploaded and processing status, exclude zotero_sync)
             pending_jobs = ProcessingJob.select().where(
                 (ProcessingJob.status == 'uploaded') | 
-                (ProcessingJob.status == 'processing')
+                (ProcessingJob.status == 'processing'),
+                ProcessingJob.job_type == 'pdf_processing'
             ).order_by(ProcessingJob.created_at)
             
             job_count = pending_jobs.count()
@@ -416,7 +484,12 @@ async def process_pending_jobs():
                     if job.status == 'processing':
                         print(f"⚙️ Processing job {job.job_id}")
                         logger.info(f"Processing job {job.job_id}")
+                        
+                        # Process PDF document (only pdf_processing jobs reach here)
                         await pipeline.process_document(job.job_id)
+                        
+                        # Add delay between jobs to reduce CPU load
+                        await asyncio.sleep(0.5)  # 500ms pause between jobs
                 
                 # Check again quickly if we processed jobs
                 await asyncio.sleep(2)

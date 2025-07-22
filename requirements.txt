@@ -21,3 +21,6 @@ itsdangerous==2.1.2
 matplotlib==3.7.2
 pyzotero==1.5.18
 PyYAML==6.0.1
+cryptography>=3.4.8
+playwright==1.40.0
+pytest-playwright==0.4.3

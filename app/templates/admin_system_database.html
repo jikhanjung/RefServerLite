@@ -1,0 +1,319 @@
+{% extends "admin_base.html" %}
+
+{% block title %}Database Reset - Admin Dashboard{% endblock %}
+
+{% block breadcrumb %}
+<li class="breadcrumb-item"><a href="/admin">Admin</a></li>
+<li class="breadcrumb-item">System</li>
+<li class="breadcrumb-item active">Database Reset</li>
+{% endblock %}
+
+{% block content %}
+<div class="page-title">
+    <h1><i class="bi bi-database-exclamation text-danger me-2"></i>Database Reset</h1>
+    <p class="page-subtitle">⚠️ DANGER ZONE: Permanently delete all data and reset the database</p>
+</div>
+
+<!-- Warning Card -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="alert alert-danger border-0 shadow-sm">
+            <div class="d-flex">
+                <i class="bi bi-exclamation-triangle-fill fs-2 me-3"></i>
+                <div>
+                    <h4 class="alert-heading">⚠️ WARNING: IRREVERSIBLE ACTION</h4>
+                    <p class="mb-2">This action will <strong>permanently delete ALL data</strong> from the system:</p>
+                    <ul class="mb-2">
+                        <li>All user accounts (except admin)</li>
+                        <li>All uploaded PDF files</li>
+                        <li>All extracted text and metadata</li>
+                        <li>All vector embeddings</li>
+                        <li>All Zotero data and configurations</li>
+                        <li>All processing jobs and history</li>
+                    </ul>
+                    <p class="mb-0"><strong>This cannot be undone!</strong> Make sure you have backups if needed.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Database Status -->
+<div class="row mb-4">
+    <div class="col-md-6">
+        <div class="admin-card">
+            <div class="admin-card-header">
+                <h5 class="mb-0">Current Database Status</h5>
+            </div>
+            <div class="admin-card-body">
+                <div id="databaseStatus">
+                    <div class="text-center py-3">
+                        <div class="spinner-border text-primary" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                        <p class="mt-2 text-muted">Loading database status...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="admin-card">
+            <div class="admin-card-header">
+                <h5 class="mb-0">Reset Information</h5>
+            </div>
+            <div class="admin-card-body">
+                <p class="small text-muted mb-2">What happens when you reset:</p>
+                <ul class="small text-muted">
+                    <li>SQLite database file deleted</li>
+                    <li>ChromaDB vector store cleared</li>
+                    <li>PDF files directory cleared</li>
+                    <li>Database recreated with clean schema</li>
+                    <li>Admin user recreated (password: admin123)</li>
+                </ul>
+                <p class="small text-warning mt-3 mb-0">
+                    <i class="bi bi-clock me-1"></i>
+                    The reset process may take 30-60 seconds to complete.
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Reset Controls -->
+<div class="row">
+    <div class="col-12">
+        <div class="admin-card">
+            <div class="admin-card-header bg-danger text-white">
+                <h5 class="mb-0">
+                    <i class="bi bi-exclamation-triangle me-2"></i>
+                    Danger Zone
+                </h5>
+            </div>
+            <div class="admin-card-body">
+                <p class="mb-3">To reset the database, you must type <code>RESET_ALL_DATA</code> in the confirmation box below:</p>
+                
+                <div class="row align-items-end">
+                    <div class="col-md-6">
+                        <label for="confirmationText" class="form-label">Confirmation Text</label>
+                        <input type="text" class="form-control" id="confirmationText" 
+                               placeholder="Type: RESET_ALL_DATA" autocomplete="off">
+                        <div class="form-text text-danger">
+                            This confirmation is required for your protection
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <button class="btn btn-danger" id="resetButton" onclick="resetDatabase()" disabled>
+                            <i class="bi bi-database-x me-2"></i>
+                            RESET ENTIRE DATABASE
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Reset Progress Modal -->
+<div class="modal fade" id="resetProgressModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header bg-danger text-white">
+                <h5 class="modal-title">
+                    <i class="bi bi-database-x me-2"></i>
+                    Resetting Database
+                </h5>
+            </div>
+            <div class="modal-body text-center">
+                <div class="spinner-border text-danger mb-3" role="status" style="width: 3rem; height: 3rem;">
+                    <span class="visually-hidden">Resetting...</span>
+                </div>
+                <h5>Database Reset in Progress</h5>
+                <p class="text-muted">Please wait while we delete all data and recreate the database...</p>
+                <div class="progress mb-3">
+                    <div class="progress-bar bg-danger progress-bar-animated" role="progressbar" style="width: 100%"></div>
+                </div>
+                <p class="small text-danger mb-0">
+                    <i class="bi bi-exclamation-triangle me-1"></i>
+                    Do not close this window or refresh the page
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    loadDatabaseStatus();
+    setupConfirmationInput();
+});
+
+function setupConfirmationInput() {
+    const confirmationInput = document.getElementById('confirmationText');
+    const resetButton = document.getElementById('resetButton');
+    
+    confirmationInput.addEventListener('input', function() {
+        const isValid = this.value === 'RESET_ALL_DATA';
+        resetButton.disabled = !isValid;
+        
+        if (isValid) {
+            resetButton.classList.remove('btn-danger');
+            resetButton.classList.add('btn-outline-danger');
+        } else {
+            resetButton.classList.remove('btn-outline-danger');
+            resetButton.classList.add('btn-danger');
+        }
+    });
+}
+
+async function loadDatabaseStatus() {
+    try {
+        // Get basic stats from jobs API (as a proxy for database status)
+        const jobsResponse = await fetch('/api/v1/jobs?limit=1', {
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        const response = await jobsResponse.json();
+        
+        // Get user count
+        const userResponse = await fetch('/api/v1/admin/users?per_page=1', {
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        const usersResponse = await userResponse.json();
+        
+        document.getElementById('databaseStatus').innerHTML = `
+            <div class="row text-center">
+                <div class="col-6">
+                    <i class="bi bi-people text-primary" style="font-size: 2rem;"></i>
+                    <h4 class="mt-2">${usersResponse.total || 0}</h4>
+                    <p class="text-muted mb-0">Users</p>
+                </div>
+                <div class="col-6">
+                    <i class="bi bi-gear text-info" style="font-size: 2rem;"></i>
+                    <h4 class="mt-2">${response.total || 0}</h4>
+                    <p class="text-muted mb-0">Jobs</p>
+                </div>
+            </div>
+            <hr>
+            <p class="text-center text-muted small mb-0">
+                Database is active and contains data
+            </p>
+        `;
+        
+    } catch (error) {
+        console.error('Error loading database status:', error);
+        document.getElementById('databaseStatus').innerHTML = `
+            <div class="text-center text-danger">
+                <i class="bi bi-exclamation-triangle fs-1"></i>
+                <p class="mt-2">Error loading database status</p>
+                <p class="small text-muted">${error.message}</p>
+            </div>
+        `;
+    }
+}
+
+async function resetDatabase() {
+    const confirmation = document.getElementById('confirmationText').value;
+    
+    if (confirmation !== 'RESET_ALL_DATA') {
+        alert('Invalid confirmation. Please type exactly: RESET_ALL_DATA');
+        return;
+    }
+    
+    // Final confirmation
+    const finalConfirm = confirm(
+        '🚨 FINAL WARNING 🚨\n\n' +
+        'You are about to PERMANENTLY DELETE ALL DATA!\n\n' +
+        'This includes:\n' +
+        '• All users and their data\n' +
+        '• All PDF files\n' +
+        '• All embeddings and metadata\n' +
+        '• All Zotero configurations\n\n' +
+        'This action CANNOT BE UNDONE!\n\n' +
+        'Are you absolutely sure you want to continue?'
+    );
+    
+    if (!finalConfirm) {
+        return;
+    }
+    
+    try {
+        // Show progress modal
+        const modal = new bootstrap.Modal(document.getElementById('resetProgressModal'));
+        modal.show();
+        
+        // Add timeout to the fetch request (2 minutes)
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minutes
+        
+        const response = await fetch('/api/v1/admin/database/reset', {
+            method: 'POST',
+            credentials: 'include',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: `confirmation=${encodeURIComponent(confirmation)}`,
+            signal: controller.signal
+        });
+        
+        const result = await response.json();
+        
+        clearTimeout(timeoutId);
+        
+        // Hide modal
+        modal.hide();
+        
+        if (response.ok) {
+            alert(
+                '✅ Database Reset Complete!\n\n' +
+                `Reset by: ${result.reset_by}\n` +
+                `Reset at: ${result.reset_at}\n\n` +
+                'Items deleted:\n' +
+                `• Database: ${result.deleted_items.database ? 'Yes' : 'No'}\n` +
+                `• ChromaDB: ${result.deleted_items.chromadb ? 'Yes' : 'No'}\n` +
+                `• PDF files: ${result.deleted_items.pdfs ? 'Yes' : 'No'}\n` +
+                `• Admin recreated: ${result.deleted_items.admin_recreated ? 'Yes' : 'No'}\n\n` +
+                '⚠️ Your password has been reset to: admin123\n' +
+                'Please change it immediately!\n\n' +
+                'The page will reload in 3 seconds...'
+            );
+            
+            // Clear confirmation
+            document.getElementById('confirmationText').value = '';
+            document.getElementById('resetButton').disabled = true;
+            
+            // Reload page after delay
+            setTimeout(() => {
+                window.location.reload();
+            }, 3000);
+            
+        } else {
+            const errorMessage = result.detail || result.message || `HTTP ${response.status}`;
+            alert(`❌ Reset failed: ${errorMessage}`);
+        }
+        
+    } catch (error) {
+        // Hide modal
+        const modal = bootstrap.Modal.getInstance(document.getElementById('resetProgressModal'));
+        if (modal) modal.hide();
+        
+        console.error('Reset error:', error);
+        
+        if (error.name === 'AbortError') {
+            alert('❌ Reset operation timed out after 2 minutes.\n\nThis might be normal if the database was very large.\nPlease check if the reset completed by refreshing the page.');
+            // Refresh page to check status
+            setTimeout(() => window.location.reload(), 2000);
+        } else if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
+            alert('❌ Network error during reset operation.\n\nThe server might be restarting. Please wait a few seconds and refresh the page to check if the reset completed.');
+            // Auto refresh after delay
+            setTimeout(() => window.location.reload(), 5000);
+        } else {
+            alert(`❌ Reset failed: ${error.message}\n\nPlease check the server logs for more details.`);
+        }
+    }
+}
+</script>
+{% endblock %}

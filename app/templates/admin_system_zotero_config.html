@@ -1,0 +1,236 @@
+{% extends "admin_base.html" %}
+
+{% block title %}System Zotero Configuration - Admin Dashboard{% endblock %}
+
+{% block breadcrumb %}
+<li class="breadcrumb-item"><a href="/admin">Admin</a></li>
+<li class="breadcrumb-item">Zotero</li>
+<li class="breadcrumb-item active">System Config</li>
+{% endblock %}
+
+{% block content %}
+<div class="page-title">
+    <h1>System Zotero Configuration</h1>
+    <p class="page-subtitle">Configure system-wide Zotero API settings</p>
+</div>
+
+<div class="admin-card">
+    <div class="admin-card-header">
+        <h5 class="mb-0">API Configuration</h5>
+    </div>
+    <div class="admin-card-body">
+        <div id="zoteroAlert" class="alert" style="display: none;"></div>
+        
+        <div class="mb-3">
+            <label for="zoteroLibraryId" class="form-label">Library ID</label>
+            <input type="text" class="form-control" id="zoteroLibraryId" 
+                   placeholder="Enter your Zotero Library ID">
+            <div class="form-text">
+                Find your Library ID at <a href="https://www.zotero.org/settings/keys" target="_blank">https://www.zotero.org/settings/keys</a>
+            </div>
+        </div>
+        
+        <div class="mb-3">
+            <label for="zoteroApiKey" class="form-label">API Key</label>
+            <input type="password" class="form-control" id="zoteroApiKey" 
+                   placeholder="Enter your Zotero API Key">
+            <div class="form-text">
+                Create a new API key at <a href="https://www.zotero.org/settings/keys" target="_blank">https://www.zotero.org/settings/keys</a>
+            </div>
+        </div>
+        
+        <div id="zoteroStatus" class="mb-3" style="display: none;">
+            <div class="d-flex justify-content-between align-items-center">
+                <span><strong>Status:</strong> <span id="zoteroStatusText"></span></span>
+                <span><strong>Last Sync:</strong> <span id="zoteroLastSync"></span></span>
+            </div>
+        </div>
+        
+        <div class="mb-3">
+            <h6>Synchronization Options</h6>
+            <div class="row">
+                <div class="col-md-6">
+                    <label for="zoteroCollectionId" class="form-label">Collection ID (Optional)</label>
+                    <input type="text" class="form-control" id="zoteroCollectionId" 
+                           placeholder="Leave empty for all collections">
+                </div>
+                <div class="col-md-6">
+                    <label for="zoteroLimit" class="form-label">Item Limit (Optional)</label>
+                    <input type="number" class="form-control" id="zoteroLimit" 
+                           placeholder="Leave empty for no limit">
+                </div>
+            </div>
+            <div class="form-check mt-2">
+                <input class="form-check-input" type="checkbox" id="zoteroForceSync">
+                <label class="form-check-label" for="zoteroForceSync">
+                    Force full synchronization (re-import all items)
+                </label>
+            </div>
+        </div>
+        
+        <div class="d-flex gap-2">
+            <button type="button" class="btn btn-primary" onclick="saveZoteroConfig()">Save Configuration</button>
+            <button type="button" class="btn btn-danger" id="deleteZoteroBtn" onclick="deleteZoteroConfig()" style="display: none;">Delete Configuration</button>
+            <button type="button" class="btn btn-success" id="syncZoteroBtn" onclick="startZoteroSync()" style="display: none;">Start Sync</button>
+            <a href="/admin/zotero/sync" class="btn btn-outline-info">View Sync Status</a>
+        </div>
+    </div>
+</div>
+
+<script>
+async function loadZoteroConfig() {
+    try {
+        const response = await fetch('/api/v1/users/me/zotero_config', {
+            credentials: 'include'
+        });
+        
+        if (response.ok) {
+            const config = await response.json();
+            
+            if (config.has_config) {
+                document.getElementById('zoteroLibraryId').value = config.library_id || '';
+                document.getElementById('zoteroStatusText').textContent = 'Configured';
+                document.getElementById('zoteroLastSync').textContent = config.last_sync ? 
+                    new Date(config.last_sync).toLocaleString() : 'Never';
+                document.getElementById('zoteroStatus').style.display = 'block';
+                document.getElementById('deleteZoteroBtn').style.display = 'inline-block';
+                document.getElementById('syncZoteroBtn').style.display = 'inline-block';
+            } else {
+                document.getElementById('zoteroStatusText').textContent = 'Not configured';
+                document.getElementById('zoteroStatus').style.display = 'none';
+                document.getElementById('deleteZoteroBtn').style.display = 'none';
+                document.getElementById('syncZoteroBtn').style.display = 'none';
+            }
+        }
+    } catch (error) {
+        console.error('Error loading Zotero config:', error);
+    }
+}
+
+async function saveZoteroConfig() {
+    const libraryId = document.getElementById('zoteroLibraryId').value.trim();
+    const apiKey = document.getElementById('zoteroApiKey').value.trim();
+    
+    if (!libraryId || !apiKey) {
+        showZoteroAlert('Please enter both Library ID and API Key.', 'danger');
+        return;
+    }
+    
+    try {
+        const response = await fetch('/api/v1/users/me/zotero_config', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            credentials: 'include',
+            body: JSON.stringify({
+                library_id: libraryId,
+                api_key: apiKey
+            })
+        });
+        
+        const result = await response.json();
+        
+        if (response.ok) {
+            showZoteroAlert('Zotero configuration saved successfully!', 'success');
+            document.getElementById('zoteroApiKey').value = ''; // Clear API key for security
+            loadZoteroConfig(); // Reload config
+        } else {
+            showZoteroAlert(result.detail || 'Error saving configuration', 'danger');
+        }
+    } catch (error) {
+        console.error('Error saving Zotero config:', error);
+        showZoteroAlert('Network error occurred', 'danger');
+    }
+}
+
+async function deleteZoteroConfig() {
+    if (!confirm('Are you sure you want to delete your Zotero configuration?')) {
+        return;
+    }
+    
+    try {
+        const response = await fetch('/api/v1/users/me/zotero_config', {
+            method: 'DELETE',
+            credentials: 'include'
+        });
+        
+        const result = await response.json();
+        
+        if (response.ok) {
+            showZoteroAlert('Zotero configuration deleted successfully!', 'success');
+            loadZoteroConfig(); // Reload config
+        } else {
+            showZoteroAlert(result.detail || 'Error deleting configuration', 'danger');
+        }
+    } catch (error) {
+        console.error('Error deleting Zotero config:', error);
+        showZoteroAlert('Network error occurred', 'danger');
+    }
+}
+
+async function startZoteroSync() {
+    const collectionId = document.getElementById('zoteroCollectionId').value.trim();
+    const limit = document.getElementById('zoteroLimit').value.trim();
+    const forceSync = document.getElementById('zoteroForceSync').checked;
+    
+    const syncData = {
+        force_full_sync: forceSync
+    };
+    
+    if (collectionId) {
+        syncData.collection_id = collectionId;
+    }
+    
+    if (limit) {
+        syncData.limit = parseInt(limit);
+    }
+    
+    try {
+        const response = await fetch('/api/v1/users/me/zotero_sync', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            credentials: 'include',
+            body: JSON.stringify(syncData)
+        });
+        
+        const result = await response.json();
+        
+        if (response.ok) {
+            showZoteroAlert(`Zotero sync started successfully! Job ID: ${result.job_id}`, 'success');
+            
+            // Redirect to sync status page
+            setTimeout(() => {
+                window.location.href = '/admin/zotero/sync';
+            }, 2000);
+        } else {
+            showZoteroAlert(result.detail || 'Error starting sync', 'danger');
+        }
+    } catch (error) {
+        console.error('Error starting Zotero sync:', error);
+        showZoteroAlert('Network error occurred', 'danger');
+    }
+}
+
+function showZoteroAlert(message, type) {
+    const alertDiv = document.getElementById('zoteroAlert');
+    alertDiv.className = `alert alert-${type}`;
+    alertDiv.textContent = message;
+    alertDiv.style.display = 'block';
+    
+    // Auto-hide success messages after 3 seconds
+    if (type === 'success') {
+        setTimeout(() => {
+            alertDiv.style.display = 'none';
+        }, 3000);
+    }
+}
+
+// Load config on page load
+document.addEventListener('DOMContentLoaded', () => {
+    loadZoteroConfig();
+});
+</script>
+{% endblock %}

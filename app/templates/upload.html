@@ -135,7 +135,7 @@ async function pollJobStatus(jobId) {
                     uploadResult.innerHTML += `
                         <div class="alert alert-info mt-3">
                             Processing completed! 
-                            <a href="/admin/document/${data.result.doc_id}" class="alert-link">View Document</a>
+                            <a href="/document/${data.result.doc_id}" class="alert-link">View Document</a>
                         </div>
                     `;
                 } else if (data.status === 'failed') {

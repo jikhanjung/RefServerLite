@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException, Request, Form, Depends
+from fastapi import FastAPI, File, UploadFile, HTTPException, Request, Form, Depends, Body
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -7,15 +7,22 @@ from typing import Optional, List
 import os
 import uuid
 from pathlib import Path
+import datetime
 from datetime import timedelta
 import numpy as np
+import logging
+import asyncio
 
-from .models import init_database, Paper, Metadata, ProcessingJob, User, PageText, SemanticChunk, ZoteroLink
+from .models import init_database, Paper, Metadata, ProcessingJob, User, PageText, SemanticChunk, ZoteroLink, PotentialDuplicate, UserAuditLog, ZoteroItem, ZoteroCollection, ZoteroItemPaper, db
 from .db import get_chromadb_client, get_or_create_collection, get_embedding_from_chroma
-from .pipeline import start_background_processor
-from .auth import create_access_token, require_admin, check_session_auth, get_current_user
+from .pipeline import start_background_processor, PDFProcessingPipeline
+from .auth import create_access_token, require_admin, check_session_auth, get_current_user, require_session_user, require_session_admin
 from .visualize import visualize_embedding_bar, visualize_embedding_heatmap, visualize_embedding_histogram
 from .visualize_3d import visualize_embedding_3d_bidirectional, visualize_embedding_3d_unidirectional, visualize_embedding_3d_surface
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Initialize FastAPI app
 app = FastAPI(title="RefServerLite", version="1.0.0")
@@ -69,16 +76,65 @@ async def startup_event():
 # Root endpoint - display upload page
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    """Landing page"""
+    return templates.TemplateResponse("landing.html", {"request": request})
+
+@app.get("/upload", response_class=HTMLResponse)
+async def upload_page(request: Request):
+    """Upload page"""
+    user = check_session_auth(request)
+    return templates.TemplateResponse("upload.html", {
+        "request": request, 
+        "current_user": user
+    })
+
+@app.get("/document/{doc_id}", response_class=HTMLResponse)
+async def document_view(request: Request, doc_id: str):
+    """Document view page (accessible to any authenticated user)"""
+    user = check_session_auth(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=302)
+    
+    try:
+        # Get the document
+        paper = Paper.get(Paper.doc_id == doc_id)
+        
+        # Check if user can access this document (admins can see all, users can see their own)
+        if not user.is_admin and paper.uploaded_by != user:
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        # Get metadata if available
+        metadata = None
+        try:
+            metadata = Metadata.get(Metadata.doc_id == doc_id)
+        except Metadata.DoesNotExist:
+            pass
+        
+        # Get semantic chunks
+        chunks = SemanticChunk.select().where(SemanticChunk.doc_id == doc_id).order_by(SemanticChunk.chunk_index)
+        
+        return templates.TemplateResponse("document.html", {
+            "request": request,
+            "current_user": user,
+            "paper": paper,
+            "metadata": metadata,
+            "chunks": list(chunks)
+        })
+        
+    except Paper.DoesNotExist:
+        raise HTTPException(status_code=404, detail="Document not found")
 
 # Authentication endpoints
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
     """Display login page"""
-    # Redirect to admin if already logged in
+    # Redirect based on user role if already logged in
     user = check_session_auth(request)
-    if user and user.is_admin:
-        return RedirectResponse(url="/admin", status_code=302)
+    if user:
+        if user.is_admin:
+            return RedirectResponse(url="/admin", status_code=302)
+        else:
+            return RedirectResponse(url="/dashboard", status_code=302)
     
     return templates.TemplateResponse("login.html", {"request": request})
 
@@ -87,15 +143,20 @@ async def login(request: Request, username: str = Form(...), password: str = For
     """Handle login form submission"""
     try:
         user = User.get(User.username == username)
-        if user.verify_password(password) and user.is_admin:
+        if user.verify_password(password):
             # Set session
             request.session["username"] = username
             user.update_last_login()
-            return RedirectResponse(url="/admin", status_code=302)
+            
+            # Redirect based on user role
+            if user.is_admin:
+                return RedirectResponse(url="/admin", status_code=302)
+            else:
+                return RedirectResponse(url="/dashboard", status_code=302)
         else:
             return templates.TemplateResponse("login.html", {
                 "request": request,
-                "error": "Invalid credentials or insufficient privileges"
+                "error": "Invalid credentials"
             })
     except User.DoesNotExist:
         return templates.TemplateResponse("login.html", {
@@ -129,7 +190,10 @@ async def api_login(username: str = Form(...), password: str = Form(...)):
 
 # API endpoints
 @app.post("/api/v1/upload")
-async def upload_pdf(file: UploadFile = File(...)):
+async def upload_pdf(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user)
+):
     """Upload a PDF file for processing"""
     # Validate file type
     if not file.filename.endswith('.pdf'):
@@ -157,7 +221,8 @@ async def upload_pdf(file: UploadFile = File(...)):
         paper = Paper.create(
             doc_id=doc_id,
             filename=file.filename,
-            file_path=str(file_path)
+            file_path=str(file_path),
+            uploaded_by=current_user
         )
         
         # Create ProcessingJob entry
@@ -165,7 +230,8 @@ async def upload_pdf(file: UploadFile = File(...)):
             job_id=job_id,
             paper=paper,
             filename=file.filename,
-            status='uploaded'
+            status='uploaded',
+            user_id=current_user
         )
         
         # Start processing immediately
@@ -236,7 +302,8 @@ async def upload_with_metadata(
         paper = Paper.create(
             doc_id=doc_id,
             filename=file.filename,
-            file_path=str(file_path)
+            file_path=str(file_path),
+            uploaded_by=current_user
         )
         
         # Create Metadata entry with user-provided data
@@ -264,7 +331,8 @@ async def upload_with_metadata(
             job_id=job_id,
             paper=paper,
             filename=file.filename,
-            status='uploaded'
+            status='uploaded',
+            user_id=current_user
         )
         
         # Start processing
@@ -308,6 +376,278 @@ async def get_job_status(job_id: str, current_user: User = Depends(get_current_u
         return response
     except ProcessingJob.DoesNotExist:
         raise HTTPException(status_code=404, detail="Job not found")
+
+@app.post("/api/v1/job/{job_id}/cancel")
+async def cancel_job(job_id: str, current_user: User = Depends(require_admin)):
+    """Cancel a running job (admin only)"""
+    try:
+        job = ProcessingJob.get(ProcessingJob.job_id == job_id)
+        
+        # Check if job can be cancelled
+        if job.status not in ['pending', 'processing']:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot cancel job with status '{job.status}'. Only pending or processing jobs can be cancelled."
+            )
+        
+        # Update job status to cancelled
+        job.status = 'cancelled'
+        job.current_step = 'cancelled'
+        job.error_message = f"Job cancelled by admin {current_user.username}"
+        job.completed_at = datetime.datetime.now()
+        job.save()
+        
+        return {
+            "success": True,
+            "message": f"Job {job_id} has been cancelled successfully",
+            "job_id": job_id,
+            "status": job.status
+        }
+        
+    except ProcessingJob.DoesNotExist:
+        raise HTTPException(status_code=404, detail="Job not found")
+    except Exception as e:
+        logger.error(f"Error cancelling job {job_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to cancel job")
+
+@app.post("/api/v1/jobs/cancel-all")
+async def cancel_all_jobs(
+    job_type: Optional[str] = None,
+    status_filter: Optional[str] = None,
+    current_user: User = Depends(require_admin)
+):
+    """Cancel all jobs or jobs of specific type/status (admin only)"""
+    import datetime
+    try:
+        # Build query for jobs to cancel
+        query = ProcessingJob.select()
+        
+        # Filter by job type if specified
+        if job_type:
+            query = query.where(ProcessingJob.job_type == job_type)
+        
+        # Filter by status if specified, otherwise default to pending/processing
+        if status_filter:
+            if status_filter in ['pending', 'processing', 'cancelled', 'completed', 'failed']:
+                query = query.where(ProcessingJob.status == status_filter)
+        else:
+            # Default: only cancel pending/processing jobs
+            query = query.where(ProcessingJob.status.in_(['pending', 'processing']))
+        
+        jobs_to_cancel = list(query)
+        cancelled_count = 0
+        
+        if not jobs_to_cancel:
+            return {
+                "success": True,
+                "message": "No jobs found to cancel",
+                "cancelled_count": 0,
+                "jobs": []
+            }
+        
+        cancelled_jobs = []
+        
+        for job in jobs_to_cancel:
+            # Skip already completed/cancelled jobs unless explicitly requested
+            if job.status not in ['pending', 'processing'] and not status_filter:
+                continue
+                
+            # Update job status
+            job.status = 'cancelled'
+            job.current_step = 'cancelled'
+            job.error_message = f"Bulk cancelled by admin {current_user.username}"
+            job.completed_at = datetime.datetime.now()
+            job.save()
+            
+            cancelled_count += 1
+            cancelled_jobs.append({
+                "job_id": job.job_id,
+                "job_type": job.job_type,
+                "filename": job.filename,
+                "previous_status": job.status,
+                "cancelled_at": job.completed_at.isoformat()
+            })
+        
+        logger.info(f"Admin {current_user.username} cancelled {cancelled_count} jobs")
+        
+        return {
+            "success": True,
+            "message": f"Successfully cancelled {cancelled_count} job{'s' if cancelled_count != 1 else ''}",
+            "cancelled_count": cancelled_count,
+            "jobs": cancelled_jobs
+        }
+        
+    except Exception as e:
+        logger.error(f"Error cancelling all jobs: {e}")
+        raise HTTPException(status_code=500, detail="Failed to cancel jobs")
+
+@app.post("/api/v1/admin/database/reset")
+async def reset_database(
+    confirmation: str = Form(...),
+    current_user: User = Depends(require_admin)
+):
+    """Reset the entire database (admin only) - DANGER ZONE"""
+    import os
+    import shutil
+    import datetime
+    
+    # Security check: require explicit confirmation
+    if confirmation != "RESET_ALL_DATA":
+        raise HTTPException(
+            status_code=400, 
+            detail="Invalid confirmation. Must provide confirmation='RESET_ALL_DATA'"
+        )
+    
+    try:
+        logger.warning(f"🚨 DANGER: Admin {current_user.username} is resetting the entire database!")
+        
+        # Get database path
+        database_path = db.database
+        chromadb_path = "/app/refdata/chromadb"
+        pdfs_path = "/app/refdata/pdfs"
+        
+        deleted_items = {
+            "database": False,
+            "chromadb": False,
+            "pdfs": False,
+            "admin_recreated": False
+        }
+        
+        # 1. Cancel all running jobs first
+        try:
+            running_jobs = ProcessingJob.select().where(ProcessingJob.status.in_(['pending', 'processing']))
+            for job in running_jobs:
+                job.status = 'cancelled'
+                job.error_message = 'Cancelled due to database reset'
+                job.completed_at = datetime.datetime.now()
+                job.save()
+            logger.info(f"✅ Cancelled {running_jobs.count()} running jobs")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not cancel jobs: {e}")
+        
+        # 2. Close ChromaDB client connections (if possible)
+        try:
+            # Force garbage collection to close any open connections
+            import gc
+            gc.collect()
+            logger.info("✅ Triggered garbage collection")
+        except Exception as e:
+            logger.warning(f"⚠️ Garbage collection warning: {e}")
+        
+        # 3. Close database connection
+        try:
+            if not db.is_closed():
+                db.close()
+            logger.info("✅ Closed database connection")
+        except Exception as e:
+            logger.warning(f"⚠️ Database close warning: {e}")
+        
+        # 4. Delete SQLite database file with retry
+        for attempt in range(3):
+            try:
+                if os.path.exists(database_path):
+                    os.remove(database_path)
+                    deleted_items["database"] = True
+                    logger.info("✅ Deleted SQLite database")
+                break
+            except Exception as e:
+                if attempt == 2:
+                    logger.error(f"❌ Failed to delete database after 3 attempts: {e}")
+                    raise
+                logger.warning(f"⚠️ Database delete attempt {attempt + 1} failed, retrying: {e}")
+                import time
+                time.sleep(1)
+        
+        # 5. Delete ChromaDB data with retry
+        for attempt in range(3):
+            try:
+                if os.path.exists(chromadb_path):
+                    shutil.rmtree(chromadb_path, ignore_errors=True)
+                    deleted_items["chromadb"] = True
+                    logger.info("✅ Deleted ChromaDB data")
+                break
+            except Exception as e:
+                if attempt == 2:
+                    logger.error(f"❌ Failed to delete ChromaDB after 3 attempts: {e}")
+                    # Continue anyway, not critical
+                logger.warning(f"⚠️ ChromaDB delete attempt {attempt + 1} failed, retrying: {e}")
+                import time
+                time.sleep(1)
+        
+        # 6. Delete PDF files with retry
+        for attempt in range(3):
+            try:
+                if os.path.exists(pdfs_path):
+                    shutil.rmtree(pdfs_path, ignore_errors=True)
+                    os.makedirs(pdfs_path, exist_ok=True)
+                    deleted_items["pdfs"] = True
+                    logger.info("✅ Deleted PDF files")
+                break
+            except Exception as e:
+                if attempt == 2:
+                    logger.error(f"❌ Failed to delete PDFs after 3 attempts: {e}")
+                    # Continue anyway, not critical
+                logger.warning(f"⚠️ PDFs delete attempt {attempt + 1} failed, retrying: {e}")
+                import time
+                time.sleep(1)
+        
+        # 5. Reinitialize database and recreate admin user
+        try:
+            # Reinitialize the database with fresh schema
+            from app.models import init_database
+            init_database(database_path)
+            logger.info("✅ Database reinitialized with fresh schema")
+            
+            # Recreate database connection
+            db.init(database_path)
+            
+            # Create new admin user with same username/email as current user
+            try:
+                admin_user = User.create(
+                    username=current_user.username,
+                    email=current_user.email or '',
+                    is_admin=True
+                )
+                admin_user.set_password('admin123')  # Default password, user should change
+                admin_user.save()
+                deleted_items["admin_recreated"] = True
+                logger.info(f"✅ Recreated admin user: {current_user.username}")
+            except Exception as user_error:
+                # Fallback to default admin
+                logger.warning(f"⚠️ Could not recreate current admin user ({user_error}), creating default admin")
+                admin_user = User.create(username='admin', email='', is_admin=True)
+                admin_user.set_password('admin123')
+                admin_user.save()
+                deleted_items["admin_recreated"] = True
+                logger.info("✅ Created default admin user")
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to reinitialize database: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to reinitialize database: {e}")
+        
+        # 6. Reinitialize ChromaDB
+        try:
+            from app.embedding import get_chroma_client
+            client = get_chroma_client()
+            # ChromaDB will be recreated on first use
+            logger.info("✅ ChromaDB client reinitialized")
+        except Exception as e:
+            logger.warning(f"ChromaDB reinit warning: {e}")
+        
+        logger.warning(f"🔥 DATABASE RESET COMPLETE by admin {current_user.username}")
+        
+        return {
+            "success": True,
+            "message": "Database has been completely reset",
+            "reset_by": current_user.username,
+            "reset_at": datetime.datetime.now().isoformat(),
+            "deleted_items": deleted_items,
+            "warning": "All data has been permanently deleted. Admin password reset to 'admin123'."
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error resetting database: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to reset database: {str(e)}")
 
 @app.get("/api/v1/jobs")
 async def get_jobs(
@@ -808,7 +1148,8 @@ async def apply_semantic_chunking(doc_id: str, force: bool = False):
             job_id=job_id,
             paper=paper,
             filename=paper.filename,
-            status='uploaded'
+            status='uploaded',
+            user_id=paper.uploaded_by
         )
         
         # Mark the job as chunking-only by setting earlier steps as completed
@@ -872,7 +1213,8 @@ async def apply_semantic_chunking_all(force: bool = False):
                     job_id=job_id,
                     paper=paper,
                     filename=paper.filename,
-                    status='uploaded'
+                    status='uploaded',
+                    user_id=paper.uploaded_by
                 )
                 
                 # Mark the job as chunking-only
@@ -981,6 +1323,7 @@ async def admin_dashboard(request: Request):
     auth_result = require_session_admin_redirect(request)
     if isinstance(auth_result, RedirectResponse):
         return auth_result
+    current_user = auth_result  # Get the authenticated user
     papers = Paper.select().order_by(Paper.created_at.desc()).limit(50)
     
     documents = []
@@ -1024,7 +1367,9 @@ async def admin_dashboard(request: Request):
     
     return templates.TemplateResponse("admin.html", {
         "request": request,
-        "documents": documents
+        "documents": documents,
+        "active_page": "dashboard",
+        "current_user": current_user
     })
 
 @app.get("/admin/jobs", response_class=HTMLResponse)
@@ -1052,8 +1397,8 @@ async def admin_jobs_dashboard(request: Request):
             "status": job.status,
             "current_step": job.current_step,
             "progress_percentage": job.progress_percentage,
-            "created_at": job.created_at,
-            "updated_at": job.updated_at,
+            "created_at": job.created_at.isoformat() if job.created_at else None,
+            "updated_at": job.updated_at.isoformat() if job.updated_at else None,
             "error_message": job.error_message,
             "doc_id": job.paper.doc_id if job.paper else None,
             "steps": job.get_step_info()
@@ -1080,6 +1425,315 @@ async def admin_jobs_dashboard(request: Request):
         "has_prev": has_prev,
         "has_next": has_next,
         "status_counts": status_counts
+    })
+
+# User Dashboard Routes
+@app.get("/dashboard", response_class=HTMLResponse)
+async def user_dashboard(request: Request):
+    """User dashboard landing page"""
+    # Check authentication
+    auth_result = require_session_user(request)
+    if isinstance(auth_result, RedirectResponse):
+        return auth_result
+    current_user = auth_result
+    
+    # Get user's recent papers
+    user_papers = Paper.select().where(Paper.uploaded_by == current_user).order_by(Paper.created_at.desc()).limit(10)
+    
+    papers = []
+    for paper in user_papers:
+        # Get latest job status
+        job_status = "unknown"
+        progress_percentage = 0
+        try:
+            latest_job = paper.jobs.order_by(ProcessingJob.created_at.desc()).get()
+            job_status = latest_job.status
+            progress_percentage = latest_job.progress_percentage
+        except ProcessingJob.DoesNotExist:
+            pass
+        
+        # Get metadata
+        metadata = {}
+        try:
+            meta = paper.metadata.get()
+            metadata = {
+                "title": meta.title,
+                "authors": ", ".join(meta.get_authors()) if hasattr(meta, 'get_authors') else [],
+            }
+        except Metadata.DoesNotExist:
+            pass
+        
+        papers.append({
+            "doc_id": paper.doc_id,
+            "filename": paper.filename,
+            "status": job_status,
+            "progress_percentage": progress_percentage,
+            "metadata": type('obj', (object,), metadata),
+            "created_at": paper.created_at
+        })
+    
+    # Get user stats
+    total_papers = Paper.select().where(Paper.uploaded_by == current_user).count()
+    processing_papers = 0
+    completed_papers = 0
+    
+    for paper in Paper.select().where(Paper.uploaded_by == current_user):
+        try:
+            latest_job = paper.jobs.order_by(ProcessingJob.created_at.desc()).get()
+            if latest_job.status == 'processing':
+                processing_papers += 1
+            elif latest_job.status == 'completed':
+                completed_papers += 1
+        except ProcessingJob.DoesNotExist:
+            pass
+    
+    # Get Zotero status
+    zotero_configured = current_user.has_zotero_config()
+    zotero_items_count = current_user.zotero_items.count()
+    
+    return templates.TemplateResponse("user_dashboard.html", {
+        "request": request,
+        "current_user": current_user,
+        "active_page": "dashboard",
+        "papers": papers,
+        "stats": {
+            "total_papers": total_papers,
+            "processing_papers": processing_papers,
+            "completed_papers": completed_papers,
+            "zotero_configured": zotero_configured,
+            "zotero_items_count": zotero_items_count
+        }
+    })
+
+@app.get("/dashboard/my-papers", response_class=HTMLResponse)
+async def user_my_papers(request: Request):
+    """User's uploaded papers page"""
+    # Check authentication
+    auth_result = require_session_user(request)
+    if isinstance(auth_result, RedirectResponse):
+        return auth_result
+    current_user = auth_result
+    
+    return templates.TemplateResponse("user_my_papers.html", {
+        "request": request,
+        "current_user": current_user,
+        "active_page": "my-papers"
+    })
+
+@app.get("/dashboard/zotero/config", response_class=HTMLResponse)
+async def user_zotero_config(request: Request):
+    """User's Zotero configuration page"""
+    # Check authentication
+    auth_result = require_session_user(request)
+    if isinstance(auth_result, RedirectResponse):
+        return auth_result
+    current_user = auth_result
+    
+    return templates.TemplateResponse("user_zotero_config.html", {
+        "request": request,
+        "current_user": current_user,
+        "active_page": "zotero-config"
+    })
+
+@app.get("/dashboard/zotero/library", response_class=HTMLResponse)
+async def user_zotero_library(request: Request):
+    """User's Zotero library page"""
+    # Check authentication
+    auth_result = require_session_user(request)
+    if isinstance(auth_result, RedirectResponse):
+        return auth_result
+    current_user = auth_result
+    
+    return templates.TemplateResponse("user_zotero_library.html", {
+        "request": request,
+        "current_user": current_user,
+        "active_page": "zotero-library"
+    })
+
+# New Admin Routes
+@app.get("/admin/papers", response_class=HTMLResponse)
+async def admin_papers(request: Request, current_user: User = Depends(require_admin)):
+    """All Papers management page"""
+    papers = Paper.select().order_by(Paper.created_at.desc()).limit(100)
+    
+    documents = []
+    for paper in papers:
+        # Get latest job status
+        job_status = "unknown"
+        current_step = None
+        progress_percentage = 0
+        job_id = None
+        try:
+            latest_job = paper.jobs.order_by(ProcessingJob.created_at.desc()).get()
+            job_status = latest_job.status
+            current_step = latest_job.current_step
+            progress_percentage = latest_job.progress_percentage
+            job_id = latest_job.job_id
+        except ProcessingJob.DoesNotExist:
+            pass
+        
+        # Get metadata
+        metadata = {}
+        try:
+            meta = paper.metadata.get()
+            metadata = {
+                "title": meta.title,
+                "authors": ", ".join(meta.get_authors()) if meta.get_authors() else None,
+                "journal": meta.journal,
+                "year": meta.year
+            }
+        except Metadata.DoesNotExist:
+            pass
+        
+        documents.append({
+            "doc_id": paper.doc_id,
+            "filename": paper.filename,
+            "created_at": paper.created_at,
+            "status": job_status,
+            "current_step": current_step,
+            "progress_percentage": progress_percentage,
+            "job_id": job_id,
+            "metadata": type('obj', (object,), metadata)
+        })
+    
+    return templates.TemplateResponse("admin_papers.html", {
+        "request": request,
+        "active_page": "papers",
+        "current_user": current_user,
+        "documents": documents
+    })
+
+@app.get("/admin/duplicates", response_class=HTMLResponse)
+async def admin_duplicates(request: Request, current_user: User = Depends(require_admin)):
+    """Duplicates management page"""
+    return templates.TemplateResponse("admin_duplicates.html", {
+        "request": request,
+        "active_page": "duplicates",
+        "current_user": current_user
+    })
+
+@app.get("/admin/users", response_class=HTMLResponse)
+async def admin_users(request: Request, current_user: User = Depends(require_admin)):
+    """User management page"""
+    return templates.TemplateResponse("admin_users.html", {
+        "request": request,
+        "active_page": "users",
+        "current_user": current_user
+    })
+
+@app.get("/admin/users/{user_id}/zotero", response_class=HTMLResponse)
+async def admin_user_zotero_details(request: Request, user_id: int, current_user: User = Depends(require_admin)):
+    """Zotero management page for a specific user"""
+    try:
+        target_user = User.get_by_id(user_id)
+        return templates.TemplateResponse("admin_user_zotero_details.html", {
+            "request": request,
+            "active_page": "users",
+            "current_user": current_user,
+            "target_user": target_user
+        })
+    except User.DoesNotExist:
+        raise HTTPException(status_code=404, detail="User not found")
+
+@app.get("/admin/audit-logs", response_class=HTMLResponse)
+async def admin_audit_logs(request: Request, current_user: User = Depends(require_admin)):
+    """Audit logs page"""
+    return templates.TemplateResponse("admin_audit_logs.html", {
+        "request": request,
+        "active_page": "audit-logs",
+        "current_user": current_user
+    })
+
+@app.get("/admin/system-zotero-config", response_class=HTMLResponse)
+async def admin_system_zotero_config(request: Request, current_user: User = Depends(require_admin)):
+    """System-wide Zotero configuration page"""
+    return templates.TemplateResponse("admin_system_zotero_config.html", {
+        "request": request,
+        "active_page": "zotero-config",
+        "current_user": current_user
+    })
+
+@app.get("/admin/zotero/sync", response_class=HTMLResponse)
+async def admin_zotero_sync(request: Request, current_user: User = Depends(require_admin)):
+    """Zotero sync status page"""
+    return templates.TemplateResponse("admin_zotero_sync.html", {
+        "request": request,
+        "active_page": "zotero-sync",
+        "current_user": current_user
+    })
+
+@app.get("/admin/zotero/library", response_class=HTMLResponse)
+async def admin_zotero_library(request: Request, current_user: User = Depends(require_admin)):
+    """Admin Zotero library browser"""
+    return templates.TemplateResponse("admin_zotero_library.html", {
+        "request": request,
+        "active_page": "zotero-library",
+        "current_user": current_user
+    })
+
+@app.get("/admin/system/jobs", response_class=HTMLResponse)
+async def admin_system_jobs(request: Request, current_user: User = Depends(require_admin)):
+    """System jobs page"""
+    # Get all jobs with pagination
+    page = int(request.query_params.get("page", 1))
+    per_page = 50
+    offset = (page - 1) * per_page
+    
+    # Get jobs ordered by creation date
+    total_jobs = ProcessingJob.select().count()
+    jobs_query = ProcessingJob.select().order_by(ProcessingJob.created_at.desc()).offset(offset).limit(per_page)
+    
+    jobs = []
+    for job in jobs_query:
+        job_data = {
+            "job_id": job.job_id,
+            "filename": job.filename,
+            "status": job.status,
+            "current_step": job.current_step,
+            "progress_percentage": job.progress_percentage,
+            "created_at": job.created_at.isoformat() if job.created_at else None,
+            "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+            "error_message": job.error_message,
+            "doc_id": job.paper.doc_id if job.paper else None
+        }
+        jobs.append(job_data)
+    
+    # Calculate pagination
+    total_pages = (total_jobs + per_page - 1) // per_page
+    
+    # Get status counts
+    status_counts = {}
+    for status in ['pending', 'processing', 'completed', 'failed']:
+        status_counts[status] = ProcessingJob.select().where(ProcessingJob.status == status).count()
+    
+    return templates.TemplateResponse("admin_system_jobs.html", {
+        "request": request,
+        "active_page": "system-jobs",
+        "current_user": current_user,
+        "jobs": jobs,
+        "page": page,
+        "per_page": per_page,
+        "total_jobs": total_jobs,
+        "total_pages": total_pages,
+        "status_counts": status_counts
+    })
+
+@app.get("/admin/system/settings", response_class=HTMLResponse)
+async def admin_system_settings(request: Request, current_user: User = Depends(require_admin)):
+    """System settings page"""
+    return templates.TemplateResponse("admin_system_settings.html", {
+        "request": request,
+        "active_page": "system-settings",
+        "current_user": current_user
+    })
+
+@app.get("/admin/system/database", response_class=HTMLResponse)
+async def admin_system_database(request: Request, current_user: User = Depends(require_admin)):
+    """Database reset page"""
+    return templates.TemplateResponse("admin_system_database.html", {
+        "request": request,
+        "active_page": "system-database",
+        "current_user": current_user
     })
 
 @app.get("/admin/document/{doc_id}", response_class=HTMLResponse)
@@ -2197,3 +2851,2356 @@ async def _search_all_levels(collection, query: str, limit: int):
     final_results = list(merged_results.values())
     final_results.sort(key=lambda x: x["score"], reverse=True)
     return final_results[:limit]
+
+# Zotero Integration APIs
+from pydantic import BaseModel, validator
+
+class ZoteroConfigRequest(BaseModel):
+    user_id: str  # Zotero user ID
+    library_type: str  # 'user' or 'group'
+    library_id: Optional[str] = None  # Group library ID (only for groups)
+    api_key: str
+
+class ZoteroConfigResponse(BaseModel):
+    success: bool
+    message: str
+    has_config: bool
+    library_id: Optional[str] = None
+    library_type: Optional[str] = None
+    user_id: Optional[str] = None  # Zotero user ID
+    last_sync: Optional[str] = None
+    configured: Optional[bool] = None  # Alias for has_config for backward compatibility
+
+@app.post("/api/v1/users/me/zotero_config", response_model=ZoteroConfigResponse)
+async def set_zotero_config(
+    request: ZoteroConfigRequest,
+    current_user: User = Depends(get_current_user)
+):
+    """Set Zotero configuration for current user"""
+    try:
+        # Validate required fields
+        if not request.user_id or not request.api_key:
+            raise HTTPException(
+                status_code=400,
+                detail="Both user_id and api_key are required"
+            )
+        
+        # For group libraries, library_id is required
+        if request.library_type == 'group' and not request.library_id:
+            raise HTTPException(
+                status_code=400,
+                detail="library_id is required for group libraries"
+            )
+        
+        # Determine the library ID to use
+        library_id = request.library_id if request.library_type == 'group' else request.user_id
+        
+        # Test Zotero connection
+        try:
+            from pyzotero import zotero
+            zot = zotero.Zotero(library_id, request.library_type, request.api_key)
+            # Test connection by getting a small number of items
+            zot.items(limit=1)
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to connect to Zotero: {str(e)}"
+            )
+        
+        # Save configuration
+        current_user.zotero_library_id = library_id
+        current_user.zotero_library_type = request.library_type
+        current_user.set_zotero_api_key(request.api_key)
+        current_user.save()
+        
+        return ZoteroConfigResponse(
+            success=True,
+            message="Zotero configuration saved successfully",
+            has_config=True,
+            library_id=request.library_id,
+            last_sync=current_user.zotero_last_sync.isoformat() if current_user.zotero_last_sync else None
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error saving Zotero config: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error"
+        )
+
+@app.post("/api/v1/users/me/zotero/test")
+async def test_user_zotero_connection(current_user: User = Depends(get_current_user)):
+    """Test Zotero connection for current user"""
+    try:
+        if not current_user.has_zotero_config():
+            raise HTTPException(
+                status_code=400,
+                detail="No Zotero configuration found. Please configure Zotero settings first."
+            )
+        
+        api_key = current_user.get_zotero_api_key()
+        if not api_key:
+            raise HTTPException(
+                status_code=400,
+                detail="Failed to decrypt Zotero API key. Please reconfigure your Zotero settings."
+            )
+        
+        # Test connection
+        try:
+            from pyzotero import zotero
+            library_type = current_user.zotero_library_type or 'user'
+            zot = zotero.Zotero(current_user.zotero_library_id, library_type, api_key)
+            
+            # Test by fetching user info and a small number of items
+            user_info = zot.key_info()
+            items = zot.items(limit=1)
+            
+            return {
+                'success': True,
+                'message': 'Zotero connection successful',
+                'library_id': current_user.zotero_library_id,
+                'library_type': library_type,
+                'user_info': {
+                    'username': user_info.get('username', 'Unknown'),
+                    'displayName': user_info.get('displayName', 'Unknown'),
+                    'userID': user_info.get('userID', 'Unknown')
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Zotero connection test failed for user {current_user.username}: {e}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to connect to Zotero: {str(e)}"
+            )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error testing Zotero connection for user {current_user.username}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error while testing connection"
+        )
+
+class ZoteroSyncRequest(BaseModel):
+    collection_id: Optional[str] = None
+    limit: Optional[int] = None
+    force_full_sync: bool = False
+    
+    class Config:
+        # Enable extra validation
+        extra = "forbid"  # Reject any extra fields
+    
+    @validator('limit')
+    def validate_limit(cls, v):
+        if v is not None:
+            if v <= 0:
+                raise ValueError('limit must be greater than 0')
+            if v > 10000:
+                raise ValueError('limit cannot exceed 10000 items for performance reasons')
+        return v
+    
+    @validator('collection_id')
+    def validate_collection_id(cls, v):
+        if v is not None:
+            # Basic validation - Zotero collection IDs are typically 8-character alphanumeric strings
+            if not v.strip():
+                raise ValueError('collection_id cannot be empty string')
+            if len(v) > 100:  # Reasonable upper bound
+                raise ValueError('collection_id is too long')
+        return v
+
+class ZoteroSyncResponse(BaseModel):
+    success: bool
+    message: str
+    job_id: Optional[str] = None
+
+@app.post("/api/v1/users/me/zotero/sync", response_model=ZoteroSyncResponse)
+async def start_user_zotero_sync(
+    request: ZoteroSyncRequest = Body(None),
+    current_user: User = Depends(get_current_user)
+):
+    """Start Zotero synchronization for current user (alternative URL)"""
+    try:
+        logger.info(f"User {current_user.username} requesting Zotero sync with request: {request}")
+        # Use the same implementation as the original endpoint for consistency
+        return await start_zotero_sync(request, current_user)
+    except Exception as e:
+        logger.error(f"Error in start_user_zotero_sync: {e}")
+        raise
+
+@app.get("/api/v1/users/me/zotero_config", response_model=ZoteroConfigResponse)
+async def get_zotero_config(current_user: User = Depends(get_current_user)):
+    """Get Zotero configuration for current user"""
+    try:
+        has_config = current_user.has_zotero_config()
+        
+        # For personal libraries, user_id is the same as library_id
+        user_id = None
+        if has_config and current_user.zotero_library_type == 'user':
+            user_id = current_user.zotero_library_id
+        
+        return ZoteroConfigResponse(
+            success=True,
+            message="Zotero configuration retrieved successfully",
+            has_config=has_config,
+            configured=has_config,  # Backward compatibility
+            library_id=current_user.zotero_library_id if has_config else None,
+            library_type=current_user.zotero_library_type if has_config else None,
+            user_id=user_id,
+            last_sync=current_user.zotero_last_sync.isoformat() if current_user.zotero_last_sync else None
+        )
+        
+    except Exception as e:
+        logger.error(f"Error getting Zotero config: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error"
+        )
+
+@app.delete("/api/v1/users/me/zotero_config")
+async def delete_zotero_config(current_user: User = Depends(get_current_user)):
+    """Delete Zotero configuration for current user"""
+    try:
+        current_user.clear_zotero_config()
+        current_user.save()
+        
+        return {"success": True, "message": "Zotero configuration deleted successfully"}
+        
+    except Exception as e:
+        logger.error(f"Error deleting Zotero config: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error"
+        )
+
+@app.delete("/api/v1/users/me/zotero/library")
+async def clear_user_zotero_library(current_user: User = Depends(get_current_user)):
+    """Clear all Zotero library data for current user"""
+    try:
+        logger.info(f"User {current_user.username} requesting to clear Zotero library")
+        # Check if user has any running Zotero sync jobs
+        running_job = (ProcessingJob
+                      .select()
+                      .where(
+                          ProcessingJob.user_id == current_user.id,
+                          ProcessingJob.job_type == 'zotero_sync',
+                          ProcessingJob.status.in_(['pending', 'processing'])
+                      )
+                      .first())
+        
+        if running_job:
+            logger.warning(f"User {current_user.username} has running sync job {running_job.job_id}")
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot clear library while sync is in progress. Please cancel the running sync job first."
+            )
+        
+        # Count existing data before deletion
+        zotero_items_count = ZoteroItem.select().where(ZoteroItem.user == current_user).count()
+        zotero_collections_count = ZoteroCollection.select().where(ZoteroCollection.user == current_user).count()
+        logger.info(f"User {current_user.username} has {zotero_items_count} items and {zotero_collections_count} collections to delete")
+        
+        # Delete all Zotero-related data for this user
+        from .models import ZoteroItemPaper
+        
+        # 1. Delete ZoteroItemPaper relationships
+        zotero_item_papers = (ZoteroItemPaper
+                             .select()
+                             .join(ZoteroItem)
+                             .where(ZoteroItem.user == current_user))
+        for zip_rel in zotero_item_papers:
+            zip_rel.delete_instance()
+        
+        # Note: ZoteroLink is legacy - not deleting as it may be used elsewhere
+        
+        # 2. Delete Papers that were created from Zotero sync (optional - commented out for safety)
+        # If you want to delete papers created from Zotero sync, uncomment below:
+        # zotero_papers = (Paper
+        #                 .select()
+        #                 .join(ZoteroItemPaper)
+        #                 .join(ZoteroItem)
+        #                 .where(ZoteroItem.user == current_user))
+        # for paper in zotero_papers:
+        #     paper.delete_instance()
+        
+        # 3. Delete ZoteroItems
+        zotero_items = ZoteroItem.select().where(ZoteroItem.user == current_user)
+        for item in zotero_items:
+            item.delete_instance()
+        
+        # 4. Delete ZoteroCollections
+        zotero_collections = ZoteroCollection.select().where(ZoteroCollection.user == current_user)
+        for collection in zotero_collections:
+            collection.delete_instance()
+        
+        # 5. Reset last sync time
+        current_user.zotero_last_sync = None
+        current_user.save()
+        
+        logger.info(f"Cleared Zotero library for user {current_user.username}: {zotero_items_count} items, {zotero_collections_count} collections")
+        
+        return {
+            "success": True, 
+            "message": f"Successfully cleared Zotero library: {zotero_items_count} items and {zotero_collections_count} collections deleted",
+            "items_deleted": zotero_items_count,
+            "collections_deleted": zotero_collections_count
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        logger.error(f"Error clearing Zotero library for user {current_user.username}: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error while clearing library"
+        )
+
+@app.post("/api/v1/users/me/zotero_sync", response_model=ZoteroSyncResponse)
+async def start_zotero_sync(
+    request: ZoteroSyncRequest = Body(None),
+    current_user: User = Depends(get_current_user)
+):
+    """Start Zotero synchronization for current user"""
+    try:
+        # Validate request parameters if provided
+        if request is not None:
+            # Pydantic will automatically validate the request based on our model
+            # Additional custom validation can be added here if needed
+            pass
+        
+        # Check if user has Zotero configuration
+        if not current_user.has_zotero_config():
+            raise HTTPException(
+                status_code=400,
+                detail="Zotero configuration not found. Please configure Zotero first."
+            )
+        
+        # Check if there's already a running sync job for this user
+        existing_job = (ProcessingJob
+                       .select()
+                       .where(
+                           ProcessingJob.user_id == current_user.id,
+                           ProcessingJob.job_type == 'zotero_sync',
+                           ProcessingJob.status.in_(['pending', 'processing'])
+                       )
+                       .first())
+        
+        if existing_job:
+            # Check if the job is stuck (created more than 30 minutes ago)
+            import datetime
+            job_age = datetime.datetime.now() - existing_job.created_at
+            if job_age.total_seconds() > 1800:  # 30 minutes
+                logger.warning(f"Found stuck Zotero sync job {existing_job.job_id}, marking as failed")
+                existing_job.mark_failed("Job timed out - automatically cancelled after 30 minutes")
+            else:
+                # Check if job is actually cancelled
+                if check_job_cancelled(existing_job.job_id):
+                    logger.info(f"Found cancelled Zotero sync job {existing_job.job_id}, marking as cancelled")
+                    existing_job.status = 'cancelled'
+                    existing_job.save()
+                else:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Zotero sync is already in progress (Job ID: {existing_job.job_id}). Please wait for it to complete or cancel it from the jobs page."
+                    )
+        
+        # Generate job ID
+        job_id = str(uuid.uuid4())
+        
+        # Create new sync job
+        job = ProcessingJob.create(
+            job_id=job_id,
+            job_type='zotero_sync',
+            user_id=current_user,
+            status='pending',
+            filename=f"zotero_sync_{current_user.username}",
+            current_step='initializing',
+            total_steps=5,
+            progress_percentage=0
+        )
+        
+        # Set parameters using helper method
+        job.set_parameters({
+            'collection_id': request.collection_id if request else None,
+            'limit': request.limit if request else None,
+            'force_full_sync': request.force_full_sync if request else False,
+            'user_id': current_user.id
+        })
+        job.save()
+        
+        # Start background processing
+        asyncio.create_task(process_zotero_sync_job(job.job_id))
+        
+        return ZoteroSyncResponse(
+            success=True,
+            message="Zotero synchronization started successfully",
+            job_id=job.job_id
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error starting Zotero sync: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error"
+        )
+
+# Audit logging helper
+def create_audit_log(
+    performing_user: User,
+    affected_user: User,
+    action: str,
+    details: dict = None,
+    request = None
+):
+    """Create an audit log entry"""
+    try:
+        # Extract IP and user agent from request if available
+        ip_address = None
+        user_agent = None
+        if request:
+            ip_address = request.client.host if hasattr(request, 'client') else None
+            user_agent = request.headers.get('user-agent', '')[:500]  # Truncate long user agents
+        
+        audit_log = UserAuditLog(
+            performing_user=performing_user,
+            performing_username=performing_user.username,
+            affected_user=affected_user,
+            affected_username=affected_user.username,
+            action=action,
+            ip_address=ip_address,
+            user_agent=user_agent
+        )
+        
+        if details:
+            audit_log.set_details(details)
+        
+        audit_log.save()
+        return audit_log
+    except Exception as e:
+        logger.error(f"Failed to create audit log: {e}")
+        return None
+
+# Password validation
+def validate_password_complexity(password: str) -> List[str]:
+    """Validate password complexity and return list of errors"""
+    errors = []
+    
+    if len(password) < 8:
+        errors.append("Password must be at least 8 characters long")
+    
+    if not any(c.isupper() for c in password):
+        errors.append("Password must contain at least one uppercase letter")
+    
+    if not any(c.islower() for c in password):
+        errors.append("Password must contain at least one lowercase letter")
+    
+    if not any(c.isdigit() for c in password):
+        errors.append("Password must contain at least one digit")
+    
+    if not any(c in "!@#$%^&*()_+-=[]{}|;:,.<>?" for c in password):
+        errors.append("Password must contain at least one special character")
+    
+    return errors
+
+# User Management Endpoints
+class CreateUserRequest(BaseModel):
+    username: str
+    email: Optional[str] = None
+    password: str
+    is_admin: bool = False
+
+class UserResponse(BaseModel):
+    id: int
+    username: str
+    email: Optional[str]
+    is_admin: bool
+    created_at: datetime.datetime
+    last_login: Optional[datetime.datetime]
+    zotero_configured: bool = False
+
+@app.post("/api/v1/admin/users", response_model=UserResponse)
+async def create_user(
+    user_request: CreateUserRequest,
+    request: Request,
+    current_user: User = Depends(require_admin)
+):
+    """Create a new user (admin only)"""
+    try:
+        # Check if username already exists
+        existing_user = User.select().where(User.username == user_request.username).first()
+        if existing_user:
+            raise HTTPException(
+                status_code=409,
+                detail="Username already exists"
+            )
+        
+        # Validate password complexity
+        password_errors = validate_password_complexity(user_request.password)
+        if password_errors:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "validation_error",
+                    "message": "Password does not meet complexity requirements",
+                    "details": {
+                        "field": "password",
+                        "requirements": password_errors
+                    }
+                }
+            )
+        
+        # Create new user
+        new_user = User(
+            username=user_request.username,
+            email=user_request.email,
+            is_admin=user_request.is_admin
+        )
+        new_user.set_password(user_request.password)
+        new_user.save()
+        
+        # Create audit log
+        create_audit_log(
+            performing_user=current_user,
+            affected_user=new_user,
+            action='user_created',
+            details={
+                'created_user_id': new_user.id,
+                'is_admin': new_user.is_admin,
+                'has_email': bool(new_user.email)
+            },
+            request=request
+        )
+        
+        logger.info(f"User '{new_user.username}' created by admin '{current_user.username}'")
+        
+        return UserResponse(
+            id=new_user.id,
+            username=new_user.username,
+            is_admin=new_user.is_admin,
+            created_at=new_user.created_at
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating user: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to create user"
+        )
+
+class UserListResponse(BaseModel):
+    total_count: int
+    page: int
+    per_page: int
+    total_pages: int
+    items: List[UserResponse]
+
+@app.get("/api/v1/admin/users", response_model=UserListResponse)
+async def list_users(
+    page: int = 1,
+    per_page: int = 20,
+    current_user: User = Depends(require_admin)
+):
+    """List all users with pagination (admin only)"""
+    try:
+        # Get total count
+        total_count = User.select().count()
+        
+        # Calculate pagination
+        total_pages = (total_count + per_page - 1) // per_page
+        offset = (page - 1) * per_page
+        
+        # Get users for current page
+        users = User.select().order_by(User.created_at.desc()).offset(offset).limit(per_page)
+        
+        # Convert to response format
+        items = []
+        for user in users:
+            items.append(UserResponse(
+                id=user.id,
+                username=user.username,
+                email=user.email,
+                is_admin=user.is_admin,
+                created_at=user.created_at,
+                last_login=user.last_login,
+                zotero_configured=user.has_zotero_config()
+            ))
+        
+        return UserListResponse(
+            total_count=total_count,
+            page=page,
+            per_page=per_page,
+            total_pages=total_pages,
+            items=items
+        )
+        
+    except Exception as e:
+        logger.error(f"Error listing users: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to list users"
+        )
+
+class UpdateUserRequest(BaseModel):
+    email: Optional[str] = None
+    is_admin: Optional[bool] = None
+    password: Optional[str] = None
+
+@app.put("/api/v1/admin/users/{user_id}", response_model=UserResponse)
+async def update_user(
+    user_id: int,
+    update_request: UpdateUserRequest,
+    request: Request,
+    current_user: User = Depends(require_admin)
+):
+    """Update user details (admin only)"""
+    try:
+        # Get user to update
+        user = User.get_or_none(User.id == user_id)
+        if not user:
+            raise HTTPException(
+                status_code=404,
+                detail="User not found"
+            )
+        
+        # Track changes for audit log
+        changes = {}
+        original_email = user.email
+        original_is_admin = user.is_admin
+        
+        # Update fields if provided
+        if update_request.email is not None:
+            if user.email != update_request.email:
+                changes['email'] = {'old': user.email, 'new': update_request.email}
+            user.email = update_request.email
+            
+        if update_request.is_admin is not None:
+            # Prevent removing admin status from the last admin
+            if user.is_admin and not update_request.is_admin:
+                admin_count = User.select().where(User.is_admin == True).count()
+                if admin_count <= 1:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Cannot remove admin status from the last administrator"
+                    )
+            if user.is_admin != update_request.is_admin:
+                changes['is_admin'] = {'old': user.is_admin, 'new': update_request.is_admin}
+            user.is_admin = update_request.is_admin
+            
+        if update_request.password is not None:
+            # Validate password complexity
+            password_errors = validate_password_complexity(update_request.password)
+            if password_errors:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "validation_error",
+                        "message": "Password does not meet complexity requirements",
+                        "details": {
+                            "field": "password",
+                            "requirements": password_errors
+                        }
+                    }
+                )
+            user.set_password(update_request.password)
+            changes['password'] = 'changed'
+        
+        user.save()
+        
+        # Create audit log if there were changes
+        if changes:
+            action = 'user_updated'
+            if 'password' in changes:
+                action = 'password_changed'
+            elif 'is_admin' in changes:
+                action = 'admin_status_changed'
+            
+            create_audit_log(
+                performing_user=current_user,
+                affected_user=user,
+                action=action,
+                details={
+                    'user_id': user.id,
+                    'changes': changes
+                },
+                request=request
+            )
+        
+        logger.info(f"User '{user.username}' updated by admin '{current_user.username}'")
+        
+        return UserResponse(
+            id=user.id,
+            username=user.username,
+            email=user.email,
+            is_admin=user.is_admin,
+            created_at=user.created_at,
+            last_login=user.last_login
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating user: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to update user"
+        )
+
+@app.delete("/api/v1/admin/users/{user_id}")
+async def delete_user(
+    user_id: int,
+    request: Request,
+    current_user: User = Depends(require_admin)
+):
+    """Delete a user (admin only)"""
+    try:
+        # Get user to delete
+        user = User.get_or_none(User.id == user_id)
+        if not user:
+            raise HTTPException(
+                status_code=404,
+                detail="User not found"
+            )
+        
+        # Prevent deleting the current user
+        if user.id == current_user.id:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot delete your own account"
+            )
+        
+        # Prevent deleting the last admin
+        if user.is_admin:
+            admin_count = User.select().where(User.is_admin == True).count()
+            if admin_count <= 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot delete the last administrator account"
+                )
+        
+        username = user.username
+        user_data = {
+            'deleted_user_id': user.id,
+            'deleted_username': user.username,
+            'was_admin': user.is_admin,
+            'had_email': bool(user.email)
+        }
+        
+        # Create audit log before deletion
+        create_audit_log(
+            performing_user=current_user,
+            affected_user=user,
+            action='user_deleted',
+            details=user_data,
+            request=request
+        )
+        
+        user.delete_instance()
+        
+        logger.info(f"User '{username}' deleted by admin '{current_user.username}'")
+        
+        return {"success": True, "message": f"User '{username}' deleted successfully"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting user: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to delete user"
+        )
+
+@app.post("/api/v1/admin/users/{user_id}/zotero/test")
+async def test_user_zotero_connection(
+    user_id: int,
+    request: Request,
+    current_user: User = Depends(require_admin)
+):
+    """Test a user's Zotero connection (admin only)"""
+    try:
+        # Get user
+        user = User.get_or_none(User.id == user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Check if user has Zotero config
+        if not user.has_zotero_config():
+            raise HTTPException(
+                status_code=400,
+                detail="User does not have Zotero configuration"
+            )
+        
+        # Decrypt API key
+        api_key = user.get_zotero_api_key()
+        if not api_key:
+            raise HTTPException(
+                status_code=400,
+                detail="Failed to decrypt API key"
+            )
+        
+        # Test connection
+        try:
+            from pyzotero import zotero
+            library_type = user.zotero_library_type or 'user'  # Default to 'user' if not set
+            zot = zotero.Zotero(user.zotero_library_id, library_type, api_key)
+            # Test by getting one collection
+            collections = zot.collections(limit=1)
+            
+            # Create audit log
+            create_audit_log(
+                performing_user=current_user,
+                affected_user=user,
+                action='zotero_test',
+                details={
+                    'library_id': user.zotero_library_id,
+                    'library_type': library_type,
+                    'success': True
+                },
+                request=request
+            )
+            
+            return {
+                "status": "success",
+                "message": "Zotero connection successful",
+                "library_id": user.zotero_library_id,
+                "library_type": library_type
+            }
+            
+        except Exception as e:
+            # Create audit log for failed test
+            create_audit_log(
+                performing_user=current_user,
+                affected_user=user,
+                action='zotero_test',
+                details={
+                    'library_id': user.zotero_library_id,
+                    'library_type': user.zotero_library_type,
+                    'success': False,
+                    'error': str(e)
+                },
+                request=request
+            )
+            
+            return {
+                "status": "error",
+                "message": f"Zotero connection failed: {str(e)}"
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error testing Zotero connection: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to test Zotero connection"
+        )
+
+class UpdateUserZoteroRequest(BaseModel):
+    library_id: str
+    library_type: str
+    api_key: Optional[str] = None  # Only provided if being changed
+
+@app.post("/api/v1/admin/users/{user_id}/zotero")
+async def update_user_zotero_config(
+    user_id: int,
+    zotero_request: UpdateUserZoteroRequest,
+    request: Request,
+    current_user: User = Depends(require_admin)
+):
+    """Update a user's Zotero configuration (admin only)"""
+    try:
+        # Get user
+        user = User.get_or_none(User.id == user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Update Zotero config
+        user.zotero_library_id = zotero_request.library_id
+        user.zotero_library_type = zotero_request.library_type
+        
+        # Update API key if provided
+        if zotero_request.api_key:
+            user.set_zotero_api_key(zotero_request.api_key)
+        
+        user.save()
+        
+        # Create audit log
+        create_audit_log(
+            performing_user=current_user,
+            affected_user=user,
+            action='zotero_config_updated',
+            details={
+                'library_id': zotero_request.library_id,
+                'library_type': zotero_request.library_type,
+                'api_key_updated': bool(zotero_request.api_key)
+            },
+            request=request
+        )
+        
+        return {
+            "success": True,
+            "message": "Zotero configuration updated successfully",
+            "has_config": user.has_zotero_config()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating Zotero config: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to update Zotero configuration"
+        )
+
+# ============================================================================
+# Admin Zotero Library APIs
+# ============================================================================
+
+@app.get("/api/v1/admin/users/{user_id}/zotero/collections")
+async def get_admin_user_zotero_collections(
+    user_id: int,
+    current_user: User = Depends(require_admin)
+):
+    """Get Zotero collections for a specific user (admin only)"""
+    try:
+        user = User.get(User.id == user_id)
+        collections = []
+        
+        for collection in user.zotero_collections.order_by(ZoteroCollection.name):
+            collections.append({
+                'key': collection.collection_key,
+                'name': collection.name,
+                'parent_key': collection.parent_key,
+                'version': collection.version,
+                'numItems': 0  # Could be calculated if needed
+            })
+        
+        return {'collections': collections}
+    except User.DoesNotExist:
+        raise HTTPException(status_code=404, detail="User not found")
+    except Exception as e:
+        logger.error(f"Error fetching collections for user {user_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch collections")
+
+@app.get("/api/v1/admin/users/{user_id}/zotero/items")
+async def get_admin_user_zotero_items(
+    user_id: int,
+    page: int = 1,
+    per_page: int = 20,
+    collection: Optional[str] = None,
+    search: Optional[str] = None,
+    item_type: Optional[str] = None,
+    current_user: User = Depends(require_admin)
+):
+    """Get Zotero items for a specific user (admin only)"""
+    try:
+        user = User.get(User.id == user_id)
+        
+        # Build query using ZoteroItemPaper relationships to get items with actual papers
+        zotero_papers_query = ZoteroItemPaper.select().join(ZoteroItem).where(ZoteroItem.user == user)
+        
+        if search:
+            # Search in Paper metadata
+            zotero_papers_query = zotero_papers_query.join(Paper).join(Metadata).where(
+                (Metadata.title.contains(search)) | 
+                (Metadata.authors.contains(search))
+            )
+        
+        # Get total count
+        total = zotero_papers_query.count()
+        
+        # Apply pagination
+        offset = (page - 1) * per_page
+        zotero_papers = zotero_papers_query.offset(offset).limit(per_page)
+        
+        items = []
+        for zp in zotero_papers:
+            item = zp.zotero_item
+            paper = zp.paper
+            
+            try:
+                metadata = paper.metadata.get()
+                title = metadata.title or 'Untitled'
+                authors = metadata.get_authors()
+                abstract = metadata.abstract or ''
+                date = str(metadata.year) if metadata.year else ''
+            except:
+                # Fallback to ZoteroItem data if no metadata
+                data = item.get_data()
+                title = data.get('title', 'Untitled')
+                creators = data.get('creators', [])
+                authors = [f"{c.get('firstName', '')} {c.get('lastName', '')}".strip() for c in creators] if isinstance(creators, list) else []
+                abstract = data.get('abstractNote', '')
+                date = data.get('date', '')
+            
+            items.append({
+                'key': item.zotero_key,
+                'itemType': item.item_type,
+                'title': title,
+                'creators': [{'name': author} for author in authors] if authors else [],
+                'date': date,
+                'publicationTitle': '',  # Could be added from metadata if needed
+                'abstractNote': abstract,
+                'attachments': [],
+                'version': item.version,
+                'paper_id': paper.doc_id
+            })
+        
+        return {
+            'items': items,
+            'total': total,
+            'page': page,
+            'per_page': per_page,
+            'total_pages': (total + per_page - 1) // per_page
+        }
+        
+    except User.DoesNotExist:
+        raise HTTPException(status_code=404, detail="User not found")
+    except Exception as e:
+        logger.error(f"Error fetching items for user {user_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch items")
+
+@app.delete("/api/v1/admin/users/{user_id}/zotero/library")
+async def admin_clear_user_zotero_library(
+    user_id: int,
+    current_user: User = Depends(require_admin)
+):
+    """Clear all Zotero library data for a specific user (admin only)"""
+    try:
+        user = User.get(User.id == user_id)
+        
+        # Check if user has any running Zotero sync jobs
+        running_job = (ProcessingJob
+                      .select()
+                      .where(
+                          ProcessingJob.user_id == user.id,
+                          ProcessingJob.job_type == 'zotero_sync',
+                          ProcessingJob.status.in_(['pending', 'processing'])
+                      )
+                      .first())
+        
+        if running_job:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot clear library for user {user.username} while sync is in progress. Please cancel the running sync job first."
+            )
+        
+        # Count existing data before deletion
+        zotero_items_count = ZoteroItem.select().where(ZoteroItem.user == user).count()
+        zotero_collections_count = ZoteroCollection.select().where(ZoteroCollection.user == user).count()
+        
+        # Delete all Zotero-related data for this user
+        from .models import ZoteroItemPaper
+        
+        # 1. Delete ZoteroItemPaper relationships
+        zotero_item_papers = (ZoteroItemPaper
+                             .select()
+                             .join(ZoteroItem)
+                             .where(ZoteroItem.user == user))
+        for zip_rel in zotero_item_papers:
+            zip_rel.delete_instance()
+        
+        # Note: ZoteroLink is legacy - not deleting as it may be used elsewhere
+        
+        # 2. Delete Papers that were created from Zotero sync (optional - commented out for safety)
+        # If you want to delete papers created from Zotero sync, uncomment below:
+        # zotero_papers = (Paper
+        #                 .select()
+        #                 .join(ZoteroItemPaper)
+        #                 .join(ZoteroItem)
+        #                 .where(ZoteroItem.user == current_user))
+        # for paper in zotero_papers:
+        #     paper.delete_instance()
+        
+        # 3. Delete ZoteroItems
+        zotero_items = ZoteroItem.select().where(ZoteroItem.user == user)
+        for item in zotero_items:
+            item.delete_instance()
+        
+        # 4. Delete ZoteroCollections
+        zotero_collections = ZoteroCollection.select().where(ZoteroCollection.user == user)
+        for collection in zotero_collections:
+            collection.delete_instance()
+        
+        # 5. Reset last sync time
+        user.zotero_last_sync = None
+        user.save()
+        
+        # Log admin action
+        logger.info(f"Admin {current_user.username} cleared Zotero library for user {user.username}: {zotero_items_count} items, {zotero_collections_count} collections")
+        
+        # Create audit log
+        create_audit_log(
+            performing_user=current_user,
+            affected_user=user,
+            action="clear_zotero_library",
+            details={
+                "items_deleted": zotero_items_count,
+                "collections_deleted": zotero_collections_count
+            }
+        )
+        
+        return {
+            "success": True, 
+            "message": f"Successfully cleared Zotero library for user {user.username}: {zotero_items_count} items and {zotero_collections_count} collections deleted",
+            "user_id": user_id,
+            "username": user.username,
+            "items_deleted": zotero_items_count,
+            "collections_deleted": zotero_collections_count
+        }
+        
+    except User.DoesNotExist:
+        raise HTTPException(status_code=404, detail="User not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error clearing Zotero library for user {user_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error while clearing library"
+        )
+
+@app.post("/api/v1/admin/users/{user_id}/zotero/sync")
+async def admin_sync_user_zotero(
+    user_id: int,
+    request: ZoteroSyncRequest = Body(None),
+    current_user: User = Depends(require_admin)
+):
+    """Start Zotero sync for a specific user (admin only)"""
+    try:
+        # Validate request parameters if provided
+        if request is not None:
+            # Pydantic will automatically validate the request based on our model
+            pass
+        
+        user = User.get(User.id == user_id)
+        
+        if not user.has_zotero_config():
+            raise HTTPException(
+                status_code=400,
+                detail="User does not have Zotero configuration"
+            )
+        
+        # Create Zotero sync job
+        job_id = str(uuid.uuid4())
+        job = ProcessingJob.create(
+            job_id=job_id,
+            filename=f"zotero_sync_admin_{user.username}",
+            status='pending',
+            job_type='zotero_sync',
+            user_id=user,
+            total_steps=5
+        )
+        job.set_parameters({
+            'user_id': user.id,
+            'collection_id': request.collection_id if request else None,
+            'limit': request.limit if request else None,
+            'force_full_sync': request.force_full_sync if request else False,
+            'started_by_admin': True,
+            'admin_user_id': current_user.id
+        })
+        job.save()
+        
+        # Start background processing
+        asyncio.create_task(process_zotero_sync_job(job_id))
+        
+        return {
+            'success': True,
+            'message': 'Zotero sync started successfully',
+            'job_id': job_id
+        }
+        
+    except User.DoesNotExist:
+        raise HTTPException(status_code=404, detail="User not found")
+    except Exception as e:
+        logger.error(f"Error starting Zotero sync for user {user_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to start sync")
+
+# ============================================================================
+# Audit Logs
+# ============================================================================
+
+class AuditLogResponse(BaseModel):
+    id: int
+    timestamp: datetime.datetime
+    performing_username: str
+    affected_username: str
+    action: str
+    details: Optional[dict]
+    ip_address: Optional[str]
+
+class AuditLogListResponse(BaseModel):
+    total_count: int
+    page: int
+    per_page: int
+    total_pages: int
+    items: List[AuditLogResponse]
+
+@app.get("/api/v1/admin/audit_logs", response_model=AuditLogListResponse)
+async def get_audit_logs(
+    page: int = 1,
+    per_page: int = 50,
+    action: Optional[str] = None,
+    affected_user: Optional[str] = None,
+    current_user: User = Depends(require_admin)
+):
+    """Get audit logs with pagination and filtering (admin only)"""
+    try:
+        # Build query
+        query = UserAuditLog.select()
+        
+        # Apply filters
+        if action:
+            query = query.where(UserAuditLog.action == action)
+        if affected_user:
+            query = query.where(UserAuditLog.affected_username.contains(affected_user))
+        
+        # Get total count
+        total_count = query.count()
+        
+        # Calculate pagination
+        total_pages = (total_count + per_page - 1) // per_page
+        offset = (page - 1) * per_page
+        
+        # Get logs for current page
+        logs = query.order_by(UserAuditLog.timestamp.desc()).offset(offset).limit(per_page)
+        
+        # Convert to response format
+        items = []
+        for log in logs:
+            items.append(AuditLogResponse(
+                id=log.id,
+                timestamp=log.timestamp,
+                performing_username=log.performing_username,
+                affected_username=log.affected_username,
+                action=log.action,
+                details=log.get_details(),
+                ip_address=log.ip_address
+            ))
+        
+        return AuditLogListResponse(
+            total_count=total_count,
+            page=page,
+            per_page=per_page,
+            total_pages=total_pages,
+            items=items
+        )
+        
+    except Exception as e:
+        logger.error(f"Error getting audit logs: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to get audit logs"
+        )
+
+def check_job_cancelled(job_id: str) -> bool:
+    """Check if job has been cancelled"""
+    try:
+        job = ProcessingJob.get(ProcessingJob.job_id == job_id)
+        return job.status == 'cancelled'
+    except ProcessingJob.DoesNotExist:
+        return True  # If job doesn't exist, consider it cancelled
+
+async def process_zotero_sync_job(job_id: str):
+    """Process Zotero synchronization job with new models"""
+    import asyncio
+    from pyzotero import zotero
+    import datetime
+    
+    job = ProcessingJob.get(ProcessingJob.job_id == job_id)
+    
+    try:
+        # Update job status
+        job.status = 'processing'
+        job.current_step = 'connecting_to_zotero'
+        job.progress_percentage = 5
+        job.save()
+        
+        # Check if job was cancelled
+        if check_job_cancelled(job_id):
+            logger.info(f"Zotero sync job {job_id} was cancelled")
+            return
+        
+        # Get user and Zotero config
+        user = User.get(User.id == job.get_parameters()['user_id'])
+        api_key = user.get_zotero_api_key()
+        
+        if not api_key:
+            raise Exception("Failed to decrypt Zotero API key. Please reconfigure your Zotero settings in the dashboard.")
+        
+        # Connect to Zotero
+        library_type = user.zotero_library_type or 'user'
+        zot = zotero.Zotero(user.zotero_library_id, library_type, api_key)
+        
+        # Check if job was cancelled
+        if check_job_cancelled(job_id):
+            logger.info(f"Zotero sync job {job_id} was cancelled")
+            return
+        
+        # Update progress - sync collections first
+        job.current_step = 'syncing_collections'
+        job.progress_percentage = 10
+        job.save()
+        
+        # Sync collections
+        collections_synced = await sync_zotero_collections(user, zot)
+        logger.info(f"Synced {collections_synced} collections")
+        
+        # Check if job was cancelled
+        if check_job_cancelled(job_id):
+            logger.info(f"Zotero sync job {job_id} was cancelled")
+            return
+        
+        # TEMPORARY: Skip item sync for collection testing
+        logger.info("⚠️ TEMPORARY: Skipping item sync for collection testing")
+        
+        # Update progress - collections completed
+        job.current_step = 'completed'
+        job.progress_percentage = 100
+        job.status = 'completed'
+        job.completed_at = datetime.datetime.now()
+        
+        # Save result
+        job.set_result({
+            'collections_synced': collections_synced,
+            'total_items': 0,  # Skipped for now
+            'processed_items': 0,
+            'pdf_count': 0,
+            'error_count': 0,
+            'message': 'Collections sync completed (items skipped for testing)'
+        })
+        job.save()
+        
+        # Update user's last sync time
+        user.zotero_last_sync = datetime.datetime.now()
+        user.save()
+        
+        logger.info(f"Collections sync completed for user {user.username}: {collections_synced} collections")
+        return  # Exit early without processing items
+        
+        # COMMENTED OUT: Item sync code
+        # # Update progress - fetch items
+        # job.current_step = 'fetching_items'
+        # job.progress_percentage = 20
+        # job.save()
+        # 
+        # # Determine sync parameters
+        # job_params = job.get_parameters()
+        # params = {}
+        # if job_params.get('limit'):
+        #     params['limit'] = job_params['limit']
+        # 
+        # # Incremental sync unless force_full_sync is True
+        # if not job_params.get('force_full_sync') and user.zotero_last_sync:
+        #     # Use last sync time for incremental sync (Zotero expects Unix timestamp)
+        #     import time
+        #     params['since'] = int(user.zotero_last_sync.timestamp())
+        # 
+        # # Fetch items
+        # if job_params.get('collection_id'):
+        #     items = zot.collection_items(job_params['collection_id'], **params)
+        # else:
+        #     items = zot.items(**params)
+        
+        # Check if job was cancelled
+        if check_job_cancelled(job_id):
+            logger.info(f"Zotero sync job {job_id} was cancelled")
+            return
+        
+        # Update progress - process items
+        job.current_step = 'processing_items'
+        job.progress_percentage = 30
+        job.total_steps = len(items) + 10
+        job.save()
+        
+        processed_count = 0
+        success_count = 0
+        error_count = 0
+        pdf_count = 0
+        
+        for item in items:
+            # Check if job was cancelled every 10 items
+            if processed_count % 10 == 0 and check_job_cancelled(job_id):
+                logger.info(f"Zotero sync job {job_id} was cancelled during item processing")
+                return
+            
+            # Add small delay between items to reduce CPU load and allow other requests
+            if processed_count % 5 == 0:  # Every 5 items
+                await asyncio.sleep(0.1)  # 100ms pause
+            
+            try:
+                # Process each item (including attachments)
+                result = await process_zotero_item(user, zot, item, job_params.get('force_full_sync', False))
+                
+                if result['processed']:
+                    success_count += 1
+                    if result['pdf_created']:
+                        pdf_count += 1
+                elif result['skipped']:
+                    # Item already exists and not force sync
+                    pass
+                else:
+                    error_count += 1
+                
+                processed_count += 1
+                
+                # Update progress
+                progress = 30 + (processed_count / len(items)) * 60
+                job.progress_percentage = int(progress)
+                job.save()
+                
+            except Exception as e:
+                logger.error(f"Error processing item {item['key']}: {e}")
+                error_count += 1
+                processed_count += 1
+                continue
+        
+        # Update last sync time
+        user.zotero_last_sync = datetime.datetime.now()
+        user.save()
+        
+        # Complete job
+        job.status = 'completed'
+        job.current_step = 'completed'
+        job.progress_percentage = 100
+        job.result = {
+            'processed_items': processed_count,
+            'success_count': success_count,
+            'error_count': error_count,
+            'pdf_count': pdf_count,
+            'collections_synced': collections_synced,
+            'total_items': len(items)
+        }
+        job.save()
+        
+        logger.info(f"Zotero sync completed for user {user.username}: {success_count} items, {pdf_count} PDFs, {error_count} errors")
+        
+    except Exception as e:
+        logger.error(f"Zotero sync job failed: {e}")
+        job.status = 'failed'
+        job.error = str(e)
+        job.save()
+
+async def sync_zotero_collections(user: User, zot_instance) -> int:
+    """Sync Zotero collections"""
+    import json
+    import datetime
+    try:
+        collections = zot_instance.collections()
+        synced_count = 0
+        
+        for collection in collections:
+            collection_data = collection['data']
+            
+            # Create or update collection (unique per user)
+            zotero_collection, created = ZoteroCollection.get_or_create(
+                collection_key=collection['key'],
+                user=user,
+                defaults={
+                    'library_id': user.zotero_library_id,
+                    'name': collection_data['name'],
+                    'parent_key': collection_data.get('parentCollection'),
+                    'version': collection['version'],
+                    'data': json.dumps(collection_data)
+                }
+            )
+            
+            if not created:
+                # Update existing collection if version is newer
+                if collection['version'] > zotero_collection.version:
+                    zotero_collection.name = collection_data['name']
+                    zotero_collection.parent_key = collection_data.get('parentCollection')
+                    zotero_collection.version = collection['version']
+                    zotero_collection.data = json.dumps(collection_data)
+                    zotero_collection.updated_at = datetime.datetime.now()
+                    zotero_collection.save()
+            
+            synced_count += 1
+        
+        return synced_count
+        
+    except Exception as e:
+        logger.error(f"Error syncing collections: {e}")
+        return 0
+
+async def process_zotero_item(user: User, zot_instance, item: dict, force_sync: bool = False) -> dict:
+    """Process a single Zotero item with new model structure"""
+    result = {
+        'processed': False,
+        'skipped': False,
+        'pdf_created': False,
+        'error': None
+    }
+    
+    try:
+        item_data = item['data']
+        item_key = item['key']
+        
+        # Check if item already exists
+        existing_item = (ZoteroItem
+                        .select()
+                        .where(
+                            ZoteroItem.zotero_key == item_key,
+                            ZoteroItem.library_id == user.zotero_library_id
+                        )
+                        .first())
+        
+        if existing_item and not force_sync:
+            # Skip if already exists and not force sync
+            result['skipped'] = True
+            return result
+        
+        # Create or update ZoteroItem
+        if existing_item:
+            zotero_item = existing_item
+            zotero_item.version = item['version']
+            zotero_item.modified_date = datetime.datetime.fromisoformat(item_data.get('dateModified', '').replace('Z', '+00:00')) if item_data.get('dateModified') else None
+        else:
+            zotero_item = ZoteroItem(
+                zotero_key=item_key,
+                library_id=user.zotero_library_id,
+                user=user,
+                version=item['version']
+            )
+        
+        # Set item data
+        zotero_item.item_type = item_data.get('itemType', 'unknown')
+        zotero_item.parent_key = item_data.get('parentItem')
+        zotero_item.is_attachment = (item_data.get('itemType') == 'attachment')
+        zotero_item.set_data(item_data)
+        zotero_item.synced_at = datetime.datetime.now()
+        
+        # Handle attachment-specific fields
+        if zotero_item.is_attachment:
+            zotero_item.content_type = item_data.get('contentType')
+            zotero_item.filename = item_data.get('filename')
+            zotero_item.link_mode = item_data.get('linkMode')
+            zotero_item.url = item_data.get('url')
+        
+        # Handle dates
+        if item_data.get('dateAdded'):
+            try:
+                zotero_item.created_date = datetime.datetime.fromisoformat(item_data['dateAdded'].replace('Z', '+00:00'))
+            except:
+                pass
+        
+        if item_data.get('dateModified'):
+            try:
+                zotero_item.modified_date = datetime.datetime.fromisoformat(item_data['dateModified'].replace('Z', '+00:00'))
+            except:
+                pass
+        
+        zotero_item.save()
+        
+        # If this is a PDF attachment, try to download and create Paper
+        if zotero_item.is_pdf_attachment():
+            try:
+                pdf_content = zot_instance.file(item_key)
+                if pdf_content:
+                    paper = await create_paper_from_zotero_attachment(user, zotero_item, zot_instance, pdf_content)
+                    if paper:
+                        # Create the many-to-many relationship
+                        ZoteroItemPaper.get_or_create(
+                            zotero_item=zotero_item,
+                            paper=paper,
+                            defaults={'relationship_type': 'attachment'}
+                        )
+                        result['pdf_created'] = True
+            except Exception as e:
+                logger.error(f"Error processing PDF attachment {item_key}: {e}")
+        
+        result['processed'] = True
+        return result
+        
+    except Exception as e:
+        result['error'] = str(e)
+        logger.error(f"Error processing Zotero item {item.get('key', 'unknown')}: {e}")
+        return result
+
+async def upload_from_zotero_sync(user: User, item: dict, pdf_content: bytes, attachment: dict):
+    """Upload PDF from Zotero sync to RefServerLite"""
+    try:
+        # Extract metadata
+        data = item['data']
+        
+        # Format authors
+        authors = []
+        for creator in data.get('creators', []):
+            if creator.get('creatorType') == 'author':
+                if 'name' in creator:
+                    authors.append(creator['name'])
+                else:
+                    name = f"{creator.get('firstName', '')} {creator.get('lastName', '')}".strip()
+                    if name:
+                        authors.append(name)
+        
+        # Extract year from date
+        year = None
+        if data.get('date'):
+            date_str = str(data['date'])
+            import re
+            matches = re.findall(r'\b\d{4}\b', date_str)
+            current_year = datetime.datetime.now().year
+            
+            for potential_year_str in matches:
+                try:
+                    potential_year = int(potential_year_str)
+                    if 1500 <= potential_year <= current_year + 1:
+                        year = potential_year
+                        break
+                except ValueError:
+                    pass
+        
+        # Create document
+        doc_id = f"zotero_{item['key']}"
+        filename = attachment['data'].get('filename', f"{item['key']}.pdf")
+        
+        # Save PDF file
+        pdf_path = f"refdata/pdfs/{doc_id}.pdf"
+        with open(pdf_path, 'wb') as f:
+            f.write(pdf_content)
+        
+        # Create Paper record
+        paper = Paper.create(
+            doc_id=doc_id,
+            filename=filename,
+            file_path=pdf_path,
+            uploaded_by=user.id
+        )
+        
+        # Create Metadata record
+        Metadata.create(
+            paper=paper,
+            title=data.get('title', 'Untitled'),
+            authors=json.dumps(authors),
+            journal=data.get('publicationTitle', ''),
+            year=year,
+            source='zotero'
+        )
+        
+        # Create ZoteroLink record
+        ZoteroLink.create(
+            paper=paper,
+            zotero_key=item['key'],
+            library_id=user.zotero_library_id,
+            zotero_version=item['version'],
+            collection_keys=json.dumps(data.get('collections', [])),
+            tags=json.dumps([tag['tag'] for tag in data.get('tags', [])])
+        )
+        
+        # Start background processing for this document
+        processing_job = ProcessingJob.create(
+            job_id=str(uuid.uuid4()),
+            job_type='process_pdf',
+            user_id=user,
+            status='pending',
+            filename=filename,
+            current_step='initializing',
+            total_steps=4,
+            progress_percentage=0
+        )
+        
+        # Set parameters using helper method
+        processing_job.set_parameters({'doc_id': doc_id, 'from_zotero': True})
+        processing_job.save()
+        
+        # Start processing
+        asyncio.create_task(process_document_job(processing_job.job_id))
+        
+        logger.info(f"Successfully uploaded {filename} from Zotero")
+        
+    except Exception as e:
+        logger.error(f"Error uploading from Zotero: {e}")
+        raise
+
+async def create_paper_from_zotero_attachment(user: User, zotero_item: 'ZoteroItem', zot_instance, pdf_content: bytes) -> Optional['Paper']:
+    """Create a Paper record from a Zotero PDF attachment using new model structure"""
+    try:
+        import uuid
+        import os
+        import json
+        
+        # Get parent item metadata if this is an attachment
+        parent_item = None
+        if zotero_item.parent_key:
+            # Try to get parent from our database first
+            parent_zotero_item = (ZoteroItem
+                                .select()
+                                .where(
+                                    ZoteroItem.zotero_key == zotero_item.parent_key,
+                                    ZoteroItem.library_id == zotero_item.library_id
+                                )
+                                .first())
+            
+            if parent_zotero_item:
+                parent_item = parent_zotero_item.get_data()
+            else:
+                # Fetch parent from Zotero API
+                try:
+                    parent_item_response = zot_instance.item(zotero_item.parent_key)
+                    parent_item = parent_item_response['data']
+                except:
+                    logger.warning(f"Could not fetch parent item {zotero_item.parent_key}")
+        
+        # Generate unique doc_id and filename
+        doc_id = str(uuid.uuid4())
+        filename = zotero_item.filename or f"zotero_{zotero_item.zotero_key}.pdf"
+        
+        # Ensure filename is unique and safe
+        safe_filename = "".join(c for c in filename if c.isalnum() or c in "._-")
+        if not safe_filename.endswith('.pdf'):
+            safe_filename += '.pdf'
+        
+        # Save PDF file
+        pdf_dir = "refdata/pdfs"
+        os.makedirs(pdf_dir, exist_ok=True)
+        pdf_path = os.path.join(pdf_dir, safe_filename)
+        
+        # Handle duplicate filenames
+        counter = 1
+        original_path = pdf_path
+        while os.path.exists(pdf_path):
+            name, ext = os.path.splitext(original_path)
+            pdf_path = f"{name}_{counter}{ext}"
+            counter += 1
+        
+        with open(pdf_path, 'wb') as f:
+            f.write(pdf_content)
+        
+        # Create Paper record
+        paper = Paper.create(
+            doc_id=doc_id,
+            filename=os.path.basename(pdf_path),
+            file_path=pdf_path
+        )
+        
+        # Extract metadata from parent item or attachment
+        metadata_source = parent_item or zotero_item.get_data()
+        
+        # Extract authors
+        authors = []
+        if 'creators' in metadata_source:
+            for creator in metadata_source['creators']:
+                if creator.get('creatorType') in ['author', 'editor']:
+                    if 'name' in creator:
+                        authors.append(creator['name'])
+                    elif 'firstName' in creator and 'lastName' in creator:
+                        authors.append(f"{creator['firstName']} {creator['lastName']}")
+                    elif 'lastName' in creator:
+                        authors.append(creator['lastName'])
+        
+        # Extract year from date
+        year = None
+        date_str = metadata_source.get('date', '')
+        if date_str:
+            try:
+                # Try to extract year from various date formats
+                import re
+                year_match = re.search(r'\b(19|20)\d{2}\b', date_str)
+                if year_match:
+                    year = int(year_match.group())
+            except:
+                pass
+        
+        # Create Metadata record
+        Metadata.create(
+            paper=paper,
+            title=metadata_source.get('title', 'Untitled'),
+            authors=json.dumps(authors),
+            journal=metadata_source.get('publicationTitle', ''),
+            year=year,
+            abstract=metadata_source.get('abstractNote', ''),
+            doi=metadata_source.get('DOI', ''),
+            source='zotero'
+        )
+        
+        # Create backward-compatible ZoteroLink record if parent exists
+        if parent_item:
+            try:
+                ZoteroLink.create(
+                    paper=paper,
+                    zotero_key=zotero_item.parent_key,
+                    library_id=zotero_item.library_id,
+                    zotero_version=zotero_item.version,
+                    collection_keys=json.dumps(parent_item.get('collections', [])),
+                    tags=json.dumps([tag['tag'] for tag in parent_item.get('tags', [])])
+                )
+            except Exception as e:
+                logger.warning(f"Could not create ZoteroLink: {e}")
+        
+        # Start background processing for this document
+        processing_job = ProcessingJob.create(
+            job_id=str(uuid.uuid4()),
+            paper=paper,
+            filename=paper.filename,
+            status='pending',
+            user_id=user
+        )
+        
+        # Start processing
+        asyncio.create_task(process_document_job(processing_job.job_id))
+        
+        logger.info(f"Successfully created Paper {doc_id} from Zotero attachment {zotero_item.zotero_key}")
+        return paper
+        
+    except Exception as e:
+        logger.error(f"Error creating Paper from Zotero attachment {zotero_item.zotero_key}: {e}")
+        return None
+
+async def process_document_job(job_id: str):
+    """Process a document job using the pipeline processor"""
+    try:
+        # Create processor instance and process the document
+        processor = PDFProcessingPipeline()
+        await processor.process_document(job_id)
+    except Exception as e:
+        logger.error(f"Error processing document job {job_id}: {e}")
+        # Mark job as failed
+        try:
+            job = ProcessingJob.get(ProcessingJob.job_id == job_id)
+            job.mark_failed(str(e))
+        except:
+            pass
+
+# ============================================================================
+# User-specific APIs
+# ============================================================================
+
+@app.get("/api/v1/users/me/papers")
+async def get_user_papers(
+    page: int = 1,
+    per_page: int = 20,
+    status: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """Get papers uploaded by the current user"""
+    try:
+        # Build query for user's papers
+        query = Paper.select().where(Paper.uploaded_by == current_user)
+        
+        # Filter by processing status if provided
+        if status:
+            # Join with ProcessingJob to filter by status
+            query = query.join(ProcessingJob).where(ProcessingJob.status == status)
+        
+        # Get total count
+        total_count = query.count()
+        
+        # Apply pagination
+        offset = (page - 1) * per_page
+        papers_query = query.order_by(Paper.created_at.desc()).offset(offset).limit(per_page)
+        
+        papers = []
+        for paper in papers_query:
+            # Get latest job status
+            job_status = "unknown"
+            progress_percentage = 0
+            job_id = None
+            try:
+                latest_job = paper.jobs.order_by(ProcessingJob.created_at.desc()).get()
+                job_status = latest_job.status
+                progress_percentage = latest_job.progress_percentage
+                job_id = latest_job.job_id
+            except ProcessingJob.DoesNotExist:
+                pass
+            
+            # Get metadata
+            metadata = {}
+            try:
+                meta = paper.metadata.get()
+                metadata = {
+                    "title": meta.title,
+                    "authors": meta.get_authors() if hasattr(meta, 'get_authors') else [],
+                    "journal": meta.journal,
+                    "year": meta.year,
+                    "source": meta.source
+                }
+            except Metadata.DoesNotExist:
+                pass
+            
+            papers.append({
+                "doc_id": paper.doc_id,
+                "filename": paper.filename,
+                "status": job_status,
+                "progress_percentage": progress_percentage,
+                "job_id": job_id,
+                "metadata": metadata,
+                "created_at": paper.created_at.isoformat(),
+                "updated_at": paper.updated_at.isoformat()
+            })
+        
+        # Calculate pagination info
+        total_pages = (total_count + per_page - 1) // per_page
+        
+        return {
+            "papers": papers,
+            "pagination": {
+                "page": page,
+                "per_page": per_page,
+                "total": total_count,
+                "total_pages": total_pages,
+                "has_prev": page > 1,
+                "has_next": page < total_pages
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error fetching user papers: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/api/v1/users/me/zotero/collections")
+async def get_user_zotero_collections(current_user: User = Depends(get_current_user)):
+    """Get Zotero collections for the current user"""
+    import json
+    try:
+        collections = []
+        for collection in current_user.zotero_collections.order_by(ZoteroCollection.name):
+            data = json.loads(collection.data) if collection.data else {}
+            collections.append({
+                "collection_key": collection.collection_key,
+                "name": collection.name,
+                "parent_key": collection.parent_key,
+                "library_id": collection.library_id,
+                "version": collection.version,
+                "data": data,
+                "created_at": collection.created_at.isoformat(),
+                "updated_at": collection.updated_at.isoformat()
+            })
+        
+        return {"collections": collections}
+        
+    except Exception as e:
+        logger.error(f"Error fetching user Zotero collections: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/api/v1/users/me/zotero/items")
+async def get_user_zotero_items(
+    page: int = 1,
+    per_page: int = 50,
+    collection_key: Optional[str] = None,
+    item_type: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """Get Zotero items for the current user"""
+    import json
+    try:
+        # Build query using ZoteroItemPaper relationships to get items with actual papers
+        zotero_papers_query = ZoteroItemPaper.select().join(ZoteroItem).where(ZoteroItem.user == current_user)
+        
+        # Filter by collection if provided (TODO: implement when collection relationship is available)
+        if collection_key:
+            logger.warning(f"Collection filtering not yet implemented for collection_key: {collection_key}")
+        
+        # Get total count
+        total_count = zotero_papers_query.count()
+        
+        # Apply pagination
+        offset = (page - 1) * per_page
+        zotero_papers = zotero_papers_query.offset(offset).limit(per_page)
+        
+        items = []
+        for zp in zotero_papers:
+            item = zp.zotero_item
+            paper = zp.paper
+            
+            try:
+                metadata = paper.metadata.get()
+                title = metadata.title or 'Untitled'
+                authors = metadata.get_authors()
+                abstract = metadata.abstract or ''
+                date = str(metadata.year) if metadata.year else ''
+            except:
+                # Fallback to ZoteroItem data if no metadata
+                data = item.get_data()
+                title = data.get('title', 'Untitled')
+                creators = data.get('creators', [])
+                authors = [f"{c.get('firstName', '')} {c.get('lastName', '')}".strip() for c in creators] if isinstance(creators, list) else []
+                abstract = data.get('abstractNote', '')
+                date = data.get('date', '')
+            
+            items.append({
+                'key': item.zotero_key,
+                'itemType': item.item_type,
+                'title': title,
+                'creators': [{'name': author} for author in authors] if authors else [],
+                'date': date,
+                'publicationTitle': '',  # Could be added from metadata if needed
+                'abstractNote': abstract,
+                'attachments': [],
+                'version': item.version,
+                'paper_id': paper.doc_id
+            })
+        
+        # Calculate pagination info
+        total_pages = (total_count + per_page - 1) // per_page
+        
+        return {
+            "items": items,
+            "total": total_count,
+            "page": page,
+            "per_page": per_page,
+            "total_pages": total_pages
+        }
+        
+    except Exception as e:
+        logger.error(f"Error fetching user Zotero items: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+# ============================================================================
+# Duplicate Detection APIs
+# ============================================================================
+
+@app.post("/api/v1/documents/{doc_id}/check_duplicates")
+async def check_document_duplicates(doc_id: str, current_user: User = Depends(get_current_user)):
+    """Check for potential duplicates of a specific document"""
+    try:
+        # Get the paper
+        paper = Paper.get(Paper.doc_id == doc_id)
+        
+        # Run duplicate detection
+        duplicates_found = await detect_duplicates_for_paper(paper)
+        
+        # Update paper status
+        paper.duplicate_check_completed = True
+        paper.duplicate_checked_at = datetime.datetime.now()
+        paper.has_potential_duplicates = duplicates_found > 0
+        paper.save()
+        
+        return {
+            "doc_id": doc_id,
+            "duplicates_found": duplicates_found,
+            "message": f"Found {duplicates_found} potential duplicates"
+        }
+        
+    except Paper.DoesNotExist:
+        raise HTTPException(status_code=404, detail="Document not found")
+    except Exception as e:
+        logger.error(f"Error checking duplicates for {doc_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/admin/check_all_duplicates")
+async def check_all_duplicates(current_user: User = Depends(require_admin)):
+    """Run duplicate detection for all documents (admin only)"""
+    try:
+        # Get all papers that haven't been checked yet
+        papers = Paper.select().where(Paper.duplicate_check_completed == False)
+        
+        total_papers = papers.count()
+        processed = 0
+        total_duplicates = 0
+        
+        for paper in papers:
+            try:
+                duplicates_found = await detect_duplicates_for_paper(paper)
+                
+                # Update paper status
+                paper.duplicate_check_completed = True
+                paper.duplicate_checked_at = datetime.datetime.now()
+                paper.has_potential_duplicates = duplicates_found > 0
+                paper.save()
+                
+                total_duplicates += duplicates_found
+                processed += 1
+                
+                # Log progress every 10 papers
+                if processed % 10 == 0:
+                    logger.info(f"Processed {processed}/{total_papers} papers for duplicate detection")
+                    
+            except Exception as e:
+                logger.error(f"Error processing paper {paper.doc_id}: {e}")
+                processed += 1
+                continue
+        
+        return {
+            "total_papers": total_papers,
+            "processed": processed,
+            "total_duplicates": total_duplicates,
+            "message": f"Processed {processed} papers, found {total_duplicates} potential duplicates"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in batch duplicate check: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/admin/potential_duplicates")
+async def get_potential_duplicates(
+    status: str = "pending",
+    limit: int = 50,
+    offset: int = 0,
+    current_user: User = Depends(require_admin)
+):
+    """Get list of potential duplicate pairs (admin only)"""
+    try:
+        # Query potential duplicates
+        query = (PotentialDuplicate
+                .select()
+                .where(PotentialDuplicate.status == status)
+                .order_by(PotentialDuplicate.similarity_score.desc())
+                .limit(limit)
+                .offset(offset))
+        
+        duplicates = []
+        for dup in query:
+            # Get paper metadata
+            paper1_metadata = {}
+            paper2_metadata = {}
+            
+            try:
+                metadata1 = dup.paper1.metadata.get()
+                paper1_metadata = {
+                    "title": metadata1.title,
+                    "authors": metadata1.get_authors(),
+                    "journal": metadata1.journal,
+                    "year": metadata1.year
+                }
+            except:
+                pass
+            
+            try:
+                metadata2 = dup.paper2.metadata.get()
+                paper2_metadata = {
+                    "title": metadata2.title,
+                    "authors": metadata2.get_authors(),
+                    "journal": metadata2.journal,
+                    "year": metadata2.year
+                }
+            except:
+                pass
+            
+            duplicates.append({
+                "id": dup.id,
+                "paper1": {
+                    "doc_id": dup.paper1.doc_id,
+                    "filename": dup.paper1.filename,
+                    "metadata": paper1_metadata
+                },
+                "paper2": {
+                    "doc_id": dup.paper2.doc_id,
+                    "filename": dup.paper2.filename,
+                    "metadata": paper2_metadata
+                },
+                "similarity_score": dup.similarity_score,
+                "detection_method": dup.detection_method,
+                "status": dup.status,
+                "created_at": dup.created_at.isoformat()
+            })
+        
+        # Get total count
+        total_count = (PotentialDuplicate
+                      .select()
+                      .where(PotentialDuplicate.status == status)
+                      .count())
+        
+        return {
+            "duplicates": duplicates,
+            "total_count": total_count,
+            "limit": limit,
+            "offset": offset
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting potential duplicates: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/admin/resolve_duplicate")
+async def resolve_duplicate(
+    duplicate_id: int,
+    action: str,  # 'merge', 'keep_both', 'delete_duplicate'
+    keep_doc_id: str = None,  # Which document to keep (for merge/delete actions)
+    current_user: User = Depends(require_admin)
+):
+    """Resolve a potential duplicate pair (admin only)"""
+    try:
+        # Get the duplicate record
+        duplicate = PotentialDuplicate.get(PotentialDuplicate.id == duplicate_id)
+        
+        if action == "keep_both":
+            # Mark as resolved, keep both documents
+            duplicate.status = "resolved"
+            duplicate.resolved_by = current_user
+            duplicate.resolved_at = datetime.datetime.now()
+            duplicate.resolution_action = "keep_both"
+            duplicate.save()
+            
+            return {"message": "Marked as resolved - keeping both documents"}
+            
+        elif action == "ignore":
+            # Mark as ignored
+            duplicate.status = "ignored"
+            duplicate.resolved_by = current_user
+            duplicate.resolved_at = datetime.datetime.now()
+            duplicate.resolution_action = "ignore"
+            duplicate.save()
+            
+            return {"message": "Duplicate marked as ignored"}
+            
+        elif action == "delete_duplicate":
+            if not keep_doc_id:
+                raise HTTPException(status_code=400, detail="keep_doc_id is required for delete action")
+            
+            # Determine which document to delete
+            if keep_doc_id == duplicate.paper1.doc_id:
+                paper_to_delete = duplicate.paper2
+                paper_to_keep = duplicate.paper1
+            elif keep_doc_id == duplicate.paper2.doc_id:
+                paper_to_delete = duplicate.paper1
+                paper_to_keep = duplicate.paper2
+            else:
+                raise HTTPException(status_code=400, detail="keep_doc_id must be one of the duplicate pair")
+            
+            # Delete the duplicate paper and its associated data
+            await delete_paper_and_data(paper_to_delete)
+            
+            # Mark duplicate as resolved
+            duplicate.status = "resolved"
+            duplicate.resolved_by = current_user
+            duplicate.resolved_at = datetime.datetime.now()
+            duplicate.resolution_action = "delete_duplicate"
+            duplicate.save()
+            
+            return {
+                "message": f"Deleted duplicate document {paper_to_delete.doc_id}, kept {paper_to_keep.doc_id}"
+            }
+            
+        else:
+            raise HTTPException(status_code=400, detail="Invalid action. Use 'keep_both', 'ignore', or 'delete_duplicate'")
+            
+    except PotentialDuplicate.DoesNotExist:
+        raise HTTPException(status_code=404, detail="Duplicate record not found")
+    except Exception as e:
+        logger.error(f"Error resolving duplicate {duplicate_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def detect_duplicates_for_paper(paper: Paper, similarity_threshold: float = 0.85) -> int:
+    """
+    Detect potential duplicates for a given paper using embedding similarity
+    Returns the number of duplicates found
+    """
+    try:
+        collection = app.state.chroma_collection
+        
+        # Get the paper's document-level embedding
+        doc_embedding_result = collection.get(
+            ids=[paper.doc_id],
+            where={"is_document_level": True}
+        )
+        
+        if not doc_embedding_result['embeddings']:
+            logger.warning(f"No embedding found for paper {paper.doc_id}")
+            return 0
+        
+        paper_embedding = doc_embedding_result['embeddings'][0]
+        
+        # Search for similar embeddings
+        similar_results = collection.query(
+            query_embeddings=[paper_embedding],
+            n_results=100,  # Get top 100 similar documents
+            where={"is_document_level": True}
+        )
+        
+        duplicates_found = 0
+        
+        for i, similar_doc_id in enumerate(similar_results['ids'][0]):
+            similarity_score = 1.0 - similar_results['distances'][0][i]  # Convert distance to similarity
+            
+            # Skip self-comparison
+            if similar_doc_id == paper.doc_id:
+                continue
+                
+            # Only consider high similarity scores
+            if similarity_score < similarity_threshold:
+                continue
+            
+            try:
+                # Get the other paper
+                other_paper = Paper.get(Paper.doc_id == similar_doc_id)
+                
+                # Check if this duplicate relationship already exists
+                existing_duplicate = (PotentialDuplicate
+                                    .select()
+                                    .where(
+                                        ((PotentialDuplicate.paper1 == paper) & (PotentialDuplicate.paper2 == other_paper)) |
+                                        ((PotentialDuplicate.paper1 == other_paper) & (PotentialDuplicate.paper2 == paper))
+                                    )
+                                    .first())
+                
+                if existing_duplicate:
+                    # Update similarity score if it's higher
+                    if similarity_score > existing_duplicate.similarity_score:
+                        existing_duplicate.similarity_score = similarity_score
+                        existing_duplicate.save()
+                else:
+                    # Create new duplicate relationship
+                    PotentialDuplicate.create(
+                        paper1=paper,
+                        paper2=other_paper,
+                        similarity_score=similarity_score,
+                        detection_method='embedding',
+                        status='pending'
+                    )
+                    duplicates_found += 1
+                    
+            except Paper.DoesNotExist:
+                logger.warning(f"Paper {similar_doc_id} not found in database")
+                continue
+                
+        return duplicates_found
+        
+    except Exception as e:
+        logger.error(f"Error detecting duplicates for paper {paper.doc_id}: {e}")
+        return 0
+
+async def delete_paper_and_data(paper: Paper):
+    """Delete a paper and all its associated data"""
+    try:
+        # Delete from ChromaDB
+        collection = app.state.chroma_collection
+        
+        # Delete document-level embedding
+        try:
+            collection.delete(ids=[paper.doc_id])
+        except:
+            pass
+        
+        # Delete page-level embeddings
+        try:
+            page_ids = [f"{paper.doc_id}_page_{i}" for i in range(1, 100)]  # Assume max 100 pages
+            collection.delete(ids=page_ids)
+        except:
+            pass
+        
+        # Delete chunk embeddings
+        try:
+            chunks = paper.semantic_chunks
+            chunk_ids = [chunk.embedding_id for chunk in chunks]
+            if chunk_ids:
+                collection.delete(ids=chunk_ids)
+        except:
+            pass
+        
+        # Delete PDF file
+        try:
+            if paper.file_path and os.path.exists(paper.file_path):
+                os.remove(paper.file_path)
+        except:
+            pass
+        
+        # Delete database records (cascading deletes will handle related records)
+        paper.delete_instance()
+        
+        logger.info(f"Successfully deleted paper {paper.doc_id} and all associated data")
+        
+    except Exception as e:
+        logger.error(f"Error deleting paper {paper.doc_id}: {e}")
+        raise

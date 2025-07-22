@@ -11,11 +11,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comprehensive unit test suite
 - Performance optimization for large documents
 - Production deployment guide
-- Interactive 3D visualization with Plotly
 
 ### Changed
 - Enhanced error handling and logging
 - Improved UI/UX based on user feedback
+
+## [0.1.5] - 2025-01-22
+
+### Added
+- **Job Cancellation System**: Cancel running background jobs from admin dashboard
+  - `POST /api/v1/job/{job_id}/cancel` - Cancel job API endpoint
+  - Cancel button in admin jobs interface with confirmation
+  - Graceful cancellation handling in background tasks
+  - Real-time job status validation
+- **Enhanced Security**: Improved encryption key management for Zotero API keys
+  - Automatic encryption key generation and file-based storage
+  - Three-tier key resolution: environment variable → file → auto-generation
+  - Persistent key storage in `refdata/encryption.key` with secure permissions
+  - No dependency on `.env` files for Docker deployments
+
+### Fixed
+- **Template Date Formatting**: Fixed "Invalid Date" display in admin jobs dashboard
+  - Corrected ISO date string handling in Jinja2 templates
+  - Improved JavaScript date parsing for job details modal
+- **Encryption Key Persistence**: Resolved Zotero API key decryption failures
+  - Fixed dynamic key generation causing data loss on container restart
+  - Added comprehensive fallback mechanisms for key management
+- **Error Messages**: Improved user guidance for Zotero configuration issues
+
+### Changed
+- Updated admin jobs template to handle ISO formatted datetime strings
+- Enhanced docker-compose.yml with better environment variable handling
+- Improved error messages for failed Zotero API key decryption
 
 ## [0.1.4] - 2025-01-17
 

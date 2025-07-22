@@ -1,0 +1,501 @@
+{% extends "admin_base.html" %}
+
+{% block title %}Processing Jobs - Admin Dashboard{% endblock %}
+
+{% block breadcrumb %}
+<li class="breadcrumb-item"><a href="/admin">Admin</a></li>
+<li class="breadcrumb-item">System</li>
+<li class="breadcrumb-item active">Jobs</li>
+{% endblock %}
+
+{% block content %}
+<div class="page-title">
+    <h1>Processing Jobs</h1>
+    <p class="page-subtitle">Monitor background processing tasks and job queue status</p>
+</div>
+
+<!-- Job Statistics -->
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="admin-card">
+            <div class="admin-card-body text-center">
+                <i class="bi bi-hourglass text-secondary" style="font-size: 2rem;"></i>
+                <h3 class="mt-2">{{ status_counts.pending or 0 }}</h3>
+                <p class="text-muted mb-0">Pending</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="admin-card">
+            <div class="admin-card-body text-center">
+                <i class="bi bi-gear-fill text-warning" style="font-size: 2rem;"></i>
+                <h3 class="mt-2">{{ status_counts.processing or 0 }}</h3>
+                <p class="text-muted mb-0">Processing</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="admin-card">
+            <div class="admin-card-body text-center">
+                <i class="bi bi-check-circle-fill text-success" style="font-size: 2rem;"></i>
+                <h3 class="mt-2">{{ status_counts.completed or 0 }}</h3>
+                <p class="text-muted mb-0">Completed</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="admin-card">
+            <div class="admin-card-body text-center">
+                <i class="bi bi-x-circle-fill text-danger" style="font-size: 2rem;"></i>
+                <h3 class="mt-2">{{ status_counts.failed or 0 }}</h3>
+                <p class="text-muted mb-0">Failed</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Jobs Table -->
+<div class="admin-card">
+    <div class="admin-card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0">Background Jobs ({{ total_jobs }} total)</h5>
+        <div class="d-flex align-items-center gap-2">
+            <button class="btn btn-outline-primary btn-sm" onclick="refreshJobs()">
+                <i class="bi bi-arrow-clockwise"></i> Refresh
+            </button>
+            <div class="dropdown">
+                <button class="btn btn-outline-danger btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                    <i class="bi bi-x-circle"></i> Cancel Jobs
+                </button>
+                <ul class="dropdown-menu">
+                    <li><a class="dropdown-item" href="#" onclick="cancelAllJobs()">Cancel All Pending/Processing</a></li>
+                    <li><a class="dropdown-item" href="#" onclick="cancelAllJobs('pdf_processing')">Cancel All PDF Processing</a></li>
+                    <li><a class="dropdown-item" href="#" onclick="cancelAllJobs('zotero_sync')">Cancel All Zotero Sync</a></li>
+                    <li><hr class="dropdown-divider"></li>
+                    <li><a class="dropdown-item text-danger" href="#" onclick="cancelAllJobs(null, 'processing')">⚠️ Force Cancel Processing</a></li>
+                </ul>
+            </div>
+            <div class="form-check form-check-inline">
+                <input class="form-check-input" type="checkbox" id="autoRefresh" checked>
+                <label class="form-check-label" for="autoRefresh">
+                    Auto-refresh
+                </label>
+            </div>
+        </div>
+    </div>
+    <div class="admin-card-body">
+        {% if jobs %}
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>Job ID</th>
+                        <th>Document</th>
+                        <th>Status</th>
+                        <th>Current Step</th>
+                        <th>Progress</th>
+                        <th>Created</th>
+                        <th>Completed</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="jobsTableBody">
+                    {% for job in jobs %}
+                    <tr id="job-row-{{ job.job_id }}">
+                        <td>
+                            <small class="font-monospace">{{ job.job_id[:8] }}...</small>
+                        </td>
+                        <td>
+                            <strong>{{ job.filename }}</strong>
+                            {% if job.paper %}
+                            <br><small class="text-muted">
+                                <a href="/admin/document/{{ job.paper.doc_id }}" class="text-decoration-none">
+                                    View Document
+                                </a>
+                            </small>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if job.status == 'completed' %}
+                                <span class="badge bg-success">{{ job.status.title() }}</span>
+                            {% elif job.status == 'processing' %}
+                                <span class="badge bg-warning">{{ job.status.title() }}</span>
+                            {% elif job.status == 'failed' %}
+                                <span class="badge bg-danger">{{ job.status.title() }}</span>
+                            {% else %}
+                                <span class="badge bg-secondary">{{ job.status.title() }}</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if job.current_step %}
+                                <span class="badge bg-info">{{ job.current_step.title() }}</span>
+                            {% else %}
+                                <span class="text-muted">-</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <div class="progress" style="height: 20px; min-width: 120px;">
+                                <div class="progress-bar 
+                                    {% if job.status == 'completed' %}bg-success
+                                    {% elif job.status == 'failed' %}bg-danger
+                                    {% elif job.status == 'processing' %}bg-warning
+                                    {% else %}bg-secondary{% endif %}" 
+                                     style="width: {{ job.progress_percentage or 0 }}%;"
+                                     aria-valuenow="{{ job.progress_percentage or 0 }}" 
+                                     aria-valuemin="0" 
+                                     aria-valuemax="100">
+                                    {{ job.progress_percentage or 0 }}%
+                                </div>
+                            </div>
+                        </td>
+                        <td>
+                            {% if job.created_at %}
+                                <small>{{ job.created_at[:16] }}</small>
+                            {% else %}
+                                <span class="text-muted">-</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if job.completed_at %}
+                                <small>{{ job.completed_at[:16] }}</small>
+                            {% else %}
+                                <span class="text-muted">-</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <div class="btn-group btn-group-sm" role="group">
+                                <button class="btn btn-outline-primary" onclick="viewJobDetails('{{ job.job_id }}')">
+                                    <i class="bi bi-eye"></i>
+                                </button>
+                                {% if job.status in ['pending', 'processing'] %}
+                                <button class="btn btn-outline-danger" onclick="cancelJob('{{ job.job_id }}', '{{ job.filename }}')" 
+                                        title="Cancel Job">
+                                    <i class="bi bi-x-circle"></i>
+                                </button>
+                                {% elif job.status == 'failed' %}
+                                <button class="btn btn-outline-warning" onclick="retryJob('{{ job.job_id }}')">
+                                    <i class="bi bi-arrow-clockwise"></i>
+                                </button>
+                                {% endif %}
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Pagination -->
+        {% if total_pages > 1 %}
+        <nav aria-label="Jobs pagination">
+            <ul class="pagination justify-content-center">
+                {% if page > 1 %}
+                <li class="page-item">
+                    <a class="page-link" href="?page={{ page - 1 }}">Previous</a>
+                </li>
+                {% endif %}
+                
+                {% for p in range(1, total_pages + 1) %}
+                    {% if p == page %}
+                    <li class="page-item active">
+                        <span class="page-link">{{ p }}</span>
+                    </li>
+                    {% else %}
+                    <li class="page-item">
+                        <a class="page-link" href="?page={{ p }}">{{ p }}</a>
+                    </li>
+                    {% endif %}
+                {% endfor %}
+                
+                {% if page < total_pages %}
+                <li class="page-item">
+                    <a class="page-link" href="?page={{ page + 1 }}">Next</a>
+                </li>
+                {% endif %}
+            </ul>
+        </nav>
+        {% endif %}
+        {% else %}
+        <div class="text-center py-5">
+            <i class="bi bi-gear text-muted" style="font-size: 3rem;"></i>
+            <h4 class="text-muted mt-3">No background jobs</h4>
+            <p class="text-muted">Processing jobs will appear here when documents are uploaded.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Job Details Modal -->
+<div class="modal fade" id="jobDetailsModal" tabindex="-1" aria-labelledby="jobDetailsModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="jobDetailsModalLabel">Job Details</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" id="jobDetailsContent">
+                <div class="text-center">
+                    <div class="spinner-border" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+let autoRefreshInterval;
+
+// Auto-refresh functionality
+function toggleAutoRefresh() {
+    const autoRefreshCheckbox = document.getElementById('autoRefresh');
+    
+    if (autoRefreshCheckbox.checked) {
+        autoRefreshInterval = setInterval(refreshJobs, 5000); // Refresh every 5 seconds
+    } else {
+        clearInterval(autoRefreshInterval);
+    }
+}
+
+// Refresh jobs data
+async function refreshJobs() {
+    try {
+        const response = await fetch(window.location.href);
+        if (response.ok) {
+            const html = await response.text();
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(html, 'text/html');
+            
+            // Update the table body
+            const newTableBody = doc.getElementById('jobsTableBody');
+            const currentTableBody = document.getElementById('jobsTableBody');
+            if (newTableBody && currentTableBody) {
+                currentTableBody.innerHTML = newTableBody.innerHTML;
+            }
+            
+            // Update statistics
+            const statCards = doc.querySelectorAll('.admin-card h3');
+            const currentStatCards = document.querySelectorAll('.admin-card h3');
+            statCards.forEach((card, index) => {
+                if (currentStatCards[index]) {
+                    currentStatCards[index].textContent = card.textContent;
+                }
+            });
+            
+            console.log('Jobs refreshed at', new Date().toLocaleTimeString());
+        }
+    } catch (error) {
+        console.error('Error refreshing jobs:', error);
+    }
+}
+
+// View job details
+async function viewJobDetails(jobId) {
+    const modal = new bootstrap.Modal(document.getElementById('jobDetailsModal'));
+    const content = document.getElementById('jobDetailsContent');
+    
+    // Show loading spinner
+    content.innerHTML = `
+        <div class="text-center">
+            <div class="spinner-border" role="status">
+                <span class="visually-hidden">Loading...</span>
+            </div>
+            <p class="mt-2">Loading job details...</p>
+        </div>
+    `;
+    
+    modal.show();
+    
+    try {
+        const response = await fetch(`/api/v1/job/${jobId}`, {
+            credentials: 'include'
+        });
+        
+        if (response.ok) {
+            const job = await response.json();
+            
+            let stepsHtml = '';
+            if (job.steps) {
+                Object.entries(job.steps).forEach(([step, info]) => {
+                    const statusClass = {
+                        'completed': 'success',
+                        'running': 'warning', 
+                        'failed': 'danger',
+                        'pending': 'secondary'
+                    }[info.status] || 'secondary';
+                    
+                    stepsHtml += `
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <span><strong>${step.toUpperCase()}</strong></span>
+                            <span class="badge bg-${statusClass}">${info.status.toUpperCase()}</span>
+                        </div>
+                        ${info.error ? `<div class="text-danger small mb-2">${info.error}</div>` : ''}
+                        ${info.completed_at ? `<div class="text-muted small mb-3">Completed: ${new Date(info.completed_at).toLocaleString()}</div>` : ''}
+                    `;
+                });
+            }
+            
+            content.innerHTML = `
+                <div class="row">
+                    <div class="col-md-6">
+                        <h6>Basic Information</h6>
+                        <table class="table table-sm">
+                            <tr><td><strong>Job ID:</strong></td><td><small class="font-monospace">${job.job_id}</small></td></tr>
+                            <tr><td><strong>Filename:</strong></td><td>${job.filename}</td></tr>
+                            <tr><td><strong>Status:</strong></td><td><span class="badge bg-${job.status === 'completed' ? 'success' : job.status === 'failed' ? 'danger' : job.status === 'processing' ? 'warning' : 'secondary'}">${job.status}</span></td></tr>
+                            <tr><td><strong>Progress:</strong></td><td>${job.progress_percentage || 0}%</td></tr>
+                            <tr><td><strong>Created:</strong></td><td>${job.created_at ? new Date(job.created_at).toLocaleString() : 'N/A'}</td></tr>
+                            ${job.completed_at ? `<tr><td><strong>Completed:</strong></td><td>${new Date(job.completed_at).toLocaleString()}</td></tr>` : ''}
+                        </table>
+                    </div>
+                    <div class="col-md-6">
+                        <h6>Processing Steps</h6>
+                        ${stepsHtml || '<p class="text-muted">No step information available</p>'}
+                    </div>
+                </div>
+                ${job.error_message ? `
+                    <div class="mt-3">
+                        <h6>Error Message</h6>
+                        <div class="alert alert-danger">
+                            <small>${job.error_message}</small>
+                        </div>
+                    </div>
+                ` : ''}
+            `;
+        } else {
+            content.innerHTML = `
+                <div class="alert alert-danger">
+                    Failed to load job details. Please try again.
+                </div>
+            `;
+        }
+    } catch (error) {
+        console.error('Error loading job details:', error);
+        content.innerHTML = `
+            <div class="alert alert-danger">
+                Error loading job details: ${error.message}
+            </div>
+        `;
+    }
+}
+
+// Retry failed job
+async function retryJob(jobId) {
+    if (!confirm('Are you sure you want to retry this job?')) {
+        return;
+    }
+    
+    try {
+        const response = await fetch(`/api/v1/admin/retry-job/${jobId}`, {
+            method: 'POST',
+            credentials: 'include'
+        });
+        
+        if (response.ok) {
+            alert('Job retry initiated successfully!');
+            refreshJobs();
+        } else {
+            const error = await response.json();
+            alert(`Error retrying job: ${error.detail}`);
+        }
+    } catch (error) {
+        console.error('Error retrying job:', error);
+        alert(`Error retrying job: ${error.message}`);
+    }
+}
+
+// Cancel running job
+async function cancelJob(jobId, filename) {
+    if (!confirm(`Are you sure you want to cancel the job for "${filename}"?`)) {
+        return;
+    }
+    
+    try {
+        const response = await fetch(`/api/v1/job/${jobId}/cancel`, {
+            method: 'POST',
+            credentials: 'include'
+        });
+        
+        if (response.ok) {
+            const result = await response.json();
+            alert(result.message);
+            refreshJobs();
+        } else {
+            const error = await response.json();
+            alert(`Error cancelling job: ${error.detail}`);
+        }
+    } catch (error) {
+        console.error('Error cancelling job:', error);
+        alert(`Error cancelling job: ${error.message}`);
+    }
+}
+
+async function cancelAllJobs(jobType = null, statusFilter = null) {
+    let confirmMessage = '';
+    if (jobType && statusFilter) {
+        confirmMessage = `Are you sure you want to cancel all ${jobType} jobs with status '${statusFilter}'?`;
+    } else if (jobType) {
+        confirmMessage = `Are you sure you want to cancel all ${jobType} jobs?`;
+    } else if (statusFilter) {
+        confirmMessage = `Are you sure you want to cancel all jobs with status '${statusFilter}'?`;
+    } else {
+        confirmMessage = 'Are you sure you want to cancel all pending and processing jobs?';
+    }
+    
+    if (!confirm(confirmMessage + '\n\nThis action cannot be undone.')) {
+        return;
+    }
+    
+    try {
+        let url = '/api/v1/jobs/cancel-all';
+        const params = new URLSearchParams();
+        
+        if (jobType) {
+            params.append('job_type', jobType);
+        }
+        if (statusFilter) {
+            params.append('status_filter', statusFilter);
+        }
+        
+        if (params.toString()) {
+            url += '?' + params.toString();
+        }
+        
+        const response = await fetch(url, {
+            method: 'POST',
+            credentials: 'include'
+        });
+        
+        if (response.ok) {
+            const result = await response.json();
+            alert(`Success: ${result.message}\n\nCancelled ${result.cancelled_count} job(s).`);
+            refreshJobs();
+        } else {
+            const error = await response.json();
+            alert(`Error cancelling jobs: ${error.detail}`);
+        }
+    } catch (error) {
+        console.error('Error cancelling all jobs:', error);
+        alert(`Error cancelling jobs: ${error.message}`);
+    }
+}
+
+// Initialize auto-refresh
+document.getElementById('autoRefresh').addEventListener('change', toggleAutoRefresh);
+
+// Start auto-refresh on page load
+document.addEventListener('DOMContentLoaded', () => {
+    toggleAutoRefresh();
+});
+
+// Clean up interval when page unloads
+window.addEventListener('beforeunload', () => {
+    if (autoRefreshInterval) {
+        clearInterval(autoRefreshInterval);
+    }
+});
+</script>
+{% endblock %}

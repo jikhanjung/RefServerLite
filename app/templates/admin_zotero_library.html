@@ -1,0 +1,697 @@
+{% extends "admin_base.html" %}
+
+{% block title %}Zotero Library - Admin Dashboard{% endblock %}
+
+{% block breadcrumb %}
+<li class="breadcrumb-item"><a href="/admin">Admin</a></li>
+<li class="breadcrumb-item">Zotero</li>
+<li class="breadcrumb-item active">Library</li>
+{% endblock %}
+
+{% block content %}
+<div class="page-title">
+    <h1>Zotero Library Browser</h1>
+    <p class="page-subtitle">Browse and manage Zotero collections and items across all users</p>
+</div>
+
+<!-- User Selection -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="admin-card">
+            <div class="admin-card-header">
+                <h5 class="mb-0">Select User Library</h5>
+            </div>
+            <div class="admin-card-body">
+                <div class="row align-items-center">
+                    <div class="col-md-6">
+                        <select class="form-select" id="userSelect">
+                            <option value="">Select a user with Zotero configuration...</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <button class="btn btn-primary" onclick="loadUserLibrary()" id="loadLibraryBtn" disabled>
+                            <i class="bi bi-arrow-right me-2"></i>Load Library
+                        </button>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="d-flex gap-2">
+                            <button class="btn btn-outline-secondary" onclick="syncSelectedUserLibrary()" id="syncLibraryBtn" disabled>
+                                <i class="bi bi-arrow-repeat me-2"></i>Sync
+                            </button>
+                            <button class="btn btn-outline-danger" onclick="clearSelectedUserLibrary()" id="clearLibraryBtn" disabled>
+                                <i class="bi bi-database-x me-2"></i>Clear
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Library Status -->
+<div class="row mb-4" id="libraryStatus" style="display: none;">
+    <div class="col-12">
+        <div class="admin-card">
+            <div class="admin-card-body">
+                <div class="text-center py-3">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <p class="mt-2 text-muted">Loading Zotero library...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Main Library Content -->
+<div id="libraryContent" style="display: none;">
+    <!-- Controls -->
+    <div class="row mb-4">
+        <div class="col-md-6">
+            <div class="input-group">
+                <input type="text" class="form-control" id="searchItems" placeholder="Search items...">
+                <button class="btn btn-outline-secondary" type="button">
+                    <i class="bi bi-search"></i>
+                </button>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <select class="form-select" id="itemTypeFilter">
+                <option value="">All Types</option>
+                <option value="book">Books</option>
+                <option value="journalArticle">Journal Articles</option>
+                <option value="conferencePaper">Conference Papers</option>
+                <option value="thesis">Theses</option>
+                <option value="report">Reports</option>
+            </select>
+        </div>
+        <div class="col-md-3">
+            <div class="d-flex gap-2">
+                <button class="btn btn-outline-primary flex-fill" onclick="refreshItems()">
+                    <i class="bi bi-arrow-clockwise me-2"></i>Refresh
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Library Stats -->
+    <div class="row mb-4">
+        <div class="col-md-3">
+            <div class="admin-card">
+                <div class="admin-card-body text-center">
+                    <i class="bi bi-collection text-primary" style="font-size: 2rem;"></i>
+                    <h3 class="mt-2" id="collectionsCount">0</h3>
+                    <p class="text-muted mb-0">Collections</p>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="admin-card">
+                <div class="admin-card-body text-center">
+                    <i class="bi bi-file-earmark-text text-info" style="font-size: 2rem;"></i>
+                    <h3 class="mt-2" id="totalItemsCount">0</h3>
+                    <p class="text-muted mb-0">Total Items</p>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="admin-card">
+                <div class="admin-card-body text-center">
+                    <i class="bi bi-file-earmark-pdf text-success" style="font-size: 2rem;"></i>
+                    <h3 class="mt-2" id="attachmentsCount">0</h3>
+                    <p class="text-muted mb-0">PDF Attachments</p>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="admin-card">
+                <div class="admin-card-body text-center">
+                    <i class="bi bi-clock-history text-warning" style="font-size: 2rem;"></i>
+                    <h3 class="mt-2" id="lastSyncTime">-</h3>
+                    <p class="text-muted mb-0">Last Sync</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Collections and Items -->
+    <div class="row">
+        <!-- Collections Sidebar -->
+        <div class="col-md-3">
+            <div class="admin-card">
+                <div class="admin-card-header">
+                    <h6 class="mb-0">Collections</h6>
+                </div>
+                <div class="admin-card-body p-0">
+                    <div id="collectionsTree">
+                        <div class="text-center py-3">
+                            <p class="text-muted small">Select a user to view collections</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Items List -->
+        <div class="col-md-9">
+            <div class="admin-card">
+                <div class="admin-card-header d-flex justify-content-between align-items-center">
+                    <h6 class="mb-0">Items</h6>
+                    <div class="d-flex align-items-center">
+                        <span class="badge bg-secondary" id="itemCount">Select a user</span>
+                    </div>
+                </div>
+                <div class="admin-card-body p-0">
+                    <div id="itemsList">
+                        <div class="text-center py-4">
+                            <i class="bi bi-person-gear text-muted" style="font-size: 3rem;"></i>
+                            <h5 class="text-muted mt-3">Select a User</h5>
+                            <p class="text-muted">Choose a user from the dropdown above to browse their Zotero library.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Pagination -->
+            <nav aria-label="Items pagination" class="mt-4">
+                <ul class="pagination justify-content-center" id="itemsPagination">
+                    <!-- Pagination will be populated by JavaScript -->
+                </ul>
+            </nav>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let currentUser = null;
+let currentCollection = '';
+let currentItemSearch = '';
+let currentItemType = '';
+let currentItemPage = 1;
+const itemsPerPage = 20;
+
+document.addEventListener('DOMContentLoaded', function() {
+    loadUsersWithZotero();
+    
+    // Set up user selection
+    document.getElementById('userSelect').addEventListener('change', function() {
+        const selectedUser = this.value;
+        document.getElementById('loadLibraryBtn').disabled = !selectedUser;
+        document.getElementById('syncLibraryBtn').disabled = !selectedUser;
+        document.getElementById('clearLibraryBtn').disabled = !selectedUser;
+    });
+    
+    // Set up search
+    setupSearch('searchItems', function(query) {
+        currentItemSearch = query;
+        currentItemPage = 1;
+        loadItems();
+    });
+    
+    // Set up item type filter
+    document.getElementById('itemTypeFilter').addEventListener('change', function() {
+        currentItemType = this.value;
+        currentItemPage = 1;
+        loadItems();
+    });
+});
+
+async function loadUsersWithZotero() {
+    try {
+        // Get all users (increase per_page to ensure we get everyone)
+        const response = await fetchAdminData('/api/v1/admin/users?per_page=1000');
+        console.log('🔍 Full API response:', response);
+        
+        const users = response.items || [];
+        console.log('👥 All users from API:', users.length, users);
+        
+        // Log each user's Zotero status
+        users.forEach(user => {
+            console.log(`👤 User: ${user.username}, Admin: ${user.is_admin}, Zotero: ${user.zotero_configured}, ID: ${user.id}`);
+        });
+        
+        const usersWithZotero = users.filter(user => user.zotero_configured);
+        console.log('✅ Users with Zotero:', usersWithZotero.length, usersWithZotero);
+        
+        const userSelect = document.getElementById('userSelect');
+        userSelect.innerHTML = '<option value="">Select a user with Zotero configuration...</option>';
+        
+        usersWithZotero.forEach(user => {
+            const option = document.createElement('option');
+            option.value = user.id;
+            const adminBadge = user.is_admin ? ' [Admin]' : '';
+            option.textContent = `${user.username}${adminBadge} (${user.email || 'No email'})`;
+            console.log(`📝 Adding option: ${option.textContent}`);
+            userSelect.appendChild(option);
+        });
+        
+        if (usersWithZotero.length === 0) {
+            userSelect.innerHTML = '<option value="">No users with Zotero configuration found</option>';
+            console.log('❌ No users with Zotero configuration found');
+        }
+        
+    } catch (error) {
+        console.error('Error loading users:', error);
+        showNotification('Failed to load users with Zotero configuration', 'danger');
+    }
+}
+
+async function loadUserLibrary() {
+    const userId = document.getElementById('userSelect').value;
+    if (!userId) return;
+    
+    currentUser = userId;
+    
+    // Show loading state
+    document.getElementById('libraryStatus').style.display = 'block';
+    document.getElementById('libraryContent').style.display = 'none';
+    
+    try {
+        // Load user's Zotero configuration
+        const userResponse = await fetchAdminData(`/api/v1/admin/users/${userId}`);
+        const user = userResponse.user;
+        
+        if (!user.zotero_configured) {
+            throw new Error('User does not have Zotero configured');
+        }
+        
+        // Update last sync time
+        if (user.zotero_last_sync) {
+            document.getElementById('lastSyncTime').textContent = new Date(user.zotero_last_sync).toLocaleDateString();
+        } else {
+            document.getElementById('lastSyncTime').textContent = 'Never';
+        }
+        
+        // Load collections and items
+        await loadCollections();
+        await loadItems();
+        await loadLibraryStats();
+        
+        // Show library content
+        document.getElementById('libraryStatus').style.display = 'none';
+        document.getElementById('libraryContent').style.display = 'block';
+        
+    } catch (error) {
+        console.error('Error loading user library:', error);
+        showLibraryError(error.message);
+    }
+}
+
+async function loadCollections() {
+    try {
+        const response = await fetchAdminData(`/api/v1/admin/users/${currentUser}/zotero/collections`);
+        const collections = response.collections || [];
+        
+        document.getElementById('collectionsCount').textContent = collections.length;
+        
+        const collectionsHtml = buildCollectionsTree(collections);
+        document.getElementById('collectionsTree').innerHTML = collectionsHtml;
+        
+    } catch (error) {
+        console.error('Error loading collections:', error);
+        document.getElementById('collectionsTree').innerHTML = `
+            <div class="text-center py-3">
+                <i class="bi bi-exclamation-triangle text-warning"></i>
+                <p class="text-muted small mt-2">Failed to load collections</p>
+            </div>
+        `;
+    }
+}
+
+function buildCollectionsTree(collections) {
+    if (collections.length === 0) {
+        return `
+            <div class="text-center py-3">
+                <i class="bi bi-collection text-muted"></i>
+                <p class="text-muted small mt-2">No collections found</p>
+            </div>
+        `;
+    }
+    
+    // Build tree structure
+    const rootCollections = [];
+    const collectionMap = {};
+    
+    // First pass: create map and identify root collections
+    collections.forEach(collection => {
+        const key = collection.collection_key || collection.key;
+        collectionMap[key] = {
+            ...collection,
+            key: key,
+            children: []
+        };
+    });
+    
+    // Second pass: build parent-child relationships
+    collections.forEach(collection => {
+        const key = collection.collection_key || collection.key;
+        const parentKey = collection.parent_key;
+        
+        if (parentKey && collectionMap[parentKey]) {
+            collectionMap[parentKey].children.push(collectionMap[key]);
+        } else {
+            rootCollections.push(collectionMap[key]);
+        }
+    });
+    
+    // Sort collections alphabetically
+    const sortCollections = (collections) => {
+        collections.sort((a, b) => a.name.localeCompare(b.name));
+        collections.forEach(collection => {
+            if (collection.children.length > 0) {
+                sortCollections(collection.children);
+            }
+        });
+    };
+    sortCollections(rootCollections);
+    
+    // Generate HTML
+    let html = `
+        <div class="collection-item ${!currentCollection ? 'active' : ''}" onclick="selectCollection('')">
+            <i class="bi bi-house me-2"></i>All Items
+        </div>
+    `;
+    
+    const renderCollection = (collection, level = 0) => {
+        const indent = level * 16; // 16px per level
+        const hasChildren = collection.children && collection.children.length > 0;
+        const isExpanded = true; // Always expanded for now
+        
+        html += `
+            <div class="collection-item ${currentCollection === collection.key ? 'active' : ''}" 
+                 style="padding-left: ${8 + indent}px;"
+                 onclick="selectCollection('${collection.key}')">
+                ${hasChildren ? 
+                    `<i class="bi bi-chevron-${isExpanded ? 'down' : 'right'} me-1" style="font-size: 0.8rem;"></i>` : 
+                    '<span style="width: 12px; display: inline-block;"></span>'
+                }
+                <i class="bi bi-folder${hasChildren ? '' : '-fill'} me-2"></i>${collection.name}
+                <span class="badge bg-secondary ms-auto">${collection.numItems || 0}</span>
+            </div>
+        `;
+        
+        if (hasChildren && isExpanded) {
+            collection.children.forEach(child => renderCollection(child, level + 1));
+        }
+    };
+    
+    rootCollections.forEach(collection => renderCollection(collection));
+    
+    return html;
+}
+
+async function loadItems() {
+    if (!currentUser) return;
+    
+    try {
+        showLoading('itemsList', 'Loading items...');
+        
+        let url = `/api/v1/admin/users/${currentUser}/zotero/items?page=${currentItemPage}&per_page=${itemsPerPage}`;
+        if (currentCollection) url += `&collection=${currentCollection}`;
+        if (currentItemSearch) url += `&search=${encodeURIComponent(currentItemSearch)}`;
+        if (currentItemType) url += `&item_type=${currentItemType}`;
+        
+        const response = await fetchAdminData(url);
+        const items = response.items || [];
+        const total = response.total || 0;
+        
+        displayItems(items);
+        updateItemsPagination(Math.ceil(total / itemsPerPage));
+        updateItemCount(total);
+        
+    } catch (error) {
+        console.error('Error loading items:', error);
+        showError('itemsList', 'Failed to load items');
+    }
+}
+
+async function loadLibraryStats() {
+    if (!currentUser) return;
+    
+    try {
+        // Load total items count
+        const itemsResponse = await fetchAdminData(`/api/v1/admin/users/${currentUser}/zotero/items?per_page=1`);
+        document.getElementById('totalItemsCount').textContent = itemsResponse.total || 0;
+        
+        // Count attachments
+        const attachmentsResponse = await fetchAdminData(`/api/v1/admin/users/${currentUser}/zotero/items?item_type=attachment&per_page=1`);
+        document.getElementById('attachmentsCount').textContent = attachmentsResponse.total || 0;
+        
+    } catch (error) {
+        console.error('Error loading library stats:', error);
+    }
+}
+
+function displayItems(items) {
+    if (items.length === 0) {
+        showEmpty('itemsList', 'file-earmark-text', 'No items found', 
+            'Try adjusting your search or collection selection.');
+        return;
+    }
+    
+    const itemsHtml = items.map(item => `
+        <div class="zotero-item ${item.itemType}" data-item-key="${item.key}">
+            <div class="d-flex align-items-start p-3 border-bottom">
+                <div class="flex-shrink-0 me-3">
+                    <i class="bi ${getItemTypeIcon(item.itemType)} fs-4"></i>
+                </div>
+                <div class="flex-grow-1">
+                    <h6 class="mb-1">${item.title || 'Untitled'}</h6>
+                    <div class="text-muted small mb-2">
+                        ${item.creators ? item.creators.map(c => c.name || `${c.firstName} ${c.lastName}`).join(', ') : 'Unknown author'}
+                        ${item.date ? ` • ${item.date}` : ''}
+                        ${item.publicationTitle ? ` • ${item.publicationTitle}` : ''}
+                    </div>
+                    ${item.abstractNote ? `<p class="text-muted small mb-2">${truncateText(item.abstractNote, 150)}</p>` : ''}
+                    <div class="d-flex align-items-center">
+                        <span class="badge bg-light text-dark me-2">${getItemTypeLabel(item.itemType)}</span>
+                        ${item.attachments && item.attachments.length > 0 ? 
+                          `<span class="badge bg-success me-2">${item.attachments.length} attachment(s)</span>` : ''}
+                    </div>
+                </div>
+                <div class="flex-shrink-0 ms-3">
+                    <small class="text-muted">Key: ${item.key}</small>
+                </div>
+            </div>
+        </div>
+    `).join('');
+    
+    document.getElementById('itemsList').innerHTML = itemsHtml;
+}
+
+function selectCollection(collectionKey) {
+    currentCollection = collectionKey;
+    currentItemPage = 1;
+    loadCollections(); // Refresh to update active state
+    loadItems();
+}
+
+async function syncSelectedUserLibrary() {
+    const userId = document.getElementById('userSelect').value;
+    if (!userId) return;
+    
+    try {
+        showNotification('Starting Zotero sync...', 'info');
+        
+        // Allow admin to optionally pass sync parameters (for now, just force_full_sync)
+        const syncData = {
+            force_full_sync: false  // Default to incremental sync
+        };
+        
+        const response = await fetchAdminData(`/api/v1/admin/users/${userId}/zotero/sync`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(syncData)
+        });
+        
+        if (response.success) {
+            showNotification(`Zotero sync started successfully! Job ID: ${response.job_id}`, 'success');
+            // Show link to system jobs page for monitoring
+            setTimeout(() => {
+                showNotification('You can monitor sync progress in <a href="/admin/system/jobs">System Jobs</a>', 'info');
+            }, 3000);
+        } else {
+            showNotification('Sync failed: ' + response.message, 'danger');
+        }
+    } catch (error) {
+        console.error('Sync error:', error);
+        if (error.message.includes('already in progress')) {
+            showNotification(
+                'A Zotero sync is already in progress for this user. ' +
+                'Please check <a href="/admin/system/jobs">System Jobs</a> to monitor or cancel the current sync.',
+                'warning'
+            );
+        } else {
+            showNotification('Sync failed: ' + error.message, 'danger');
+        }
+    }
+}
+
+async function clearSelectedUserLibrary() {
+    const userId = document.getElementById('userSelect').value;
+    if (!userId) return;
+    
+    const userSelect = document.getElementById('userSelect');
+    const selectedOption = userSelect.options[userSelect.selectedIndex];
+    const username = selectedOption.textContent.split(' ')[0]; // Extract username from option text
+    
+    showConfirm(
+        `Are you sure you want to clear the entire Zotero library for user <strong>${username}</strong>?<br><br>` +
+        '<strong>This will permanently delete:</strong><br>' +
+        '• All synced Zotero items<br>' +
+        '• All synced collections<br>' +
+        '• All associated RefServerLite papers<br><br>' +
+        '<em>The user\'s original Zotero library will not be affected.</em>',
+        async function() {
+            try {
+                showNotification(`Clearing Zotero library for ${username}...`, 'info');
+                
+                const response = await fetchAdminData(`/api/v1/admin/users/${userId}/zotero/library`, {
+                    method: 'DELETE'
+                });
+                
+                if (response.success) {
+                    showNotification(
+                        `Zotero library cleared successfully for ${username}! ` +
+                        `Deleted ${response.items_deleted} items and ${response.collections_deleted} collections.`,
+                        'success'
+                    );
+                    
+                    // Reload library if currently viewing this user
+                    if (currentUser === userId) {
+                        setTimeout(() => {
+                            loadUserLibrary();
+                        }, 1000);
+                    }
+                } else {
+                    showNotification(`Failed to clear library for ${username}: ` + response.message, 'danger');
+                }
+            } catch (error) {
+                console.error('Error clearing library:', error);
+                if (error.message.includes('sync is in progress')) {
+                    showNotification(
+                        `Cannot clear library for ${username} while sync is in progress. ` +
+                        'Please cancel the running sync job from <a href="/admin/system/jobs">System Jobs</a> first.',
+                        'warning'
+                    );
+                } else {
+                    showNotification(`Failed to clear library for ${username}: ` + error.message, 'danger');
+                }
+            }
+        }
+    );
+}
+
+function showLibraryError(message) {
+    document.getElementById('libraryStatus').innerHTML = `
+        <div class="col-12">
+            <div class="admin-card">
+                <div class="admin-card-body text-center py-5">
+                    <i class="bi bi-exclamation-circle display-1 text-danger mb-3"></i>
+                    <h4>Library Error</h4>
+                    <p class="text-muted mb-4">${message}</p>
+                    <button class="btn btn-primary" onclick="loadUserLibrary()">
+                        <i class="bi bi-arrow-repeat me-2"></i>Retry
+                    </button>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function refreshItems() {
+    if (currentUser) {
+        loadItems();
+    }
+}
+
+// Utility functions (same as user version)
+function getItemTypeIcon(itemType) {
+    const iconMap = {
+        'book': 'bi-book',
+        'journalArticle': 'bi-file-earmark-text',
+        'conferencePaper': 'bi-file-earmark-slides',
+        'thesis': 'bi-mortarboard',
+        'report': 'bi-file-earmark-bar-graph',
+        'webpage': 'bi-globe',
+        'blogPost': 'bi-chat-text',
+        'document': 'bi-file-earmark'
+    };
+    return iconMap[itemType] || 'bi-file-earmark';
+}
+
+function getItemTypeLabel(itemType) {
+    const labelMap = {
+        'book': 'Book',
+        'journalArticle': 'Journal Article',
+        'conferencePaper': 'Conference Paper',
+        'thesis': 'Thesis',
+        'report': 'Report',
+        'webpage': 'Web Page',
+        'blogPost': 'Blog Post',
+        'document': 'Document'
+    };
+    return labelMap[itemType] || itemType;
+}
+
+function truncateText(text, maxLength) {
+    if (text.length <= maxLength) return text;
+    return text.substring(0, maxLength) + '...';
+}
+
+function updateItemsPagination(totalPages) {
+    const pagination = document.getElementById('itemsPagination');
+    
+    if (totalPages <= 1) {
+        pagination.innerHTML = '';
+        return;
+    }
+    
+    let html = '';
+    
+    // Previous button
+    html += `
+        <li class="page-item ${currentItemPage === 1 ? 'disabled' : ''}">
+            <a class="page-link" href="#" onclick="changeItemPage(${currentItemPage - 1})">Previous</a>
+        </li>
+    `;
+    
+    // Page numbers
+    for (let i = 1; i <= totalPages; i++) {
+        if (i === 1 || i === totalPages || (i >= currentItemPage - 2 && i <= currentItemPage + 2)) {
+            html += `
+                <li class="page-item ${i === currentItemPage ? 'active' : ''}">
+                    <a class="page-link" href="#" onclick="changeItemPage(${i})">${i}</a>
+                </li>
+            `;
+        } else if (i === currentItemPage - 3 || i === currentItemPage + 3) {
+            html += '<li class="page-item disabled"><span class="page-link">...</span></li>';
+        }
+    }
+    
+    // Next button
+    html += `
+        <li class="page-item ${currentItemPage === totalPages ? 'disabled' : ''}">
+            <a class="page-link" href="#" onclick="changeItemPage(${currentItemPage + 1})">Next</a>
+        </li>
+    `;
+    
+    pagination.innerHTML = html;
+}
+
+function changeItemPage(page) {
+    currentItemPage = page;
+    loadItems();
+}
+
+function updateItemCount(total) {
+    document.getElementById('itemCount').textContent = `${total} item${total !== 1 ? 's' : ''}`;
+}
+</script>
+{% endblock %}

@@ -1,0 +1,235 @@
+{% extends "admin_base.html" %}
+
+{% block title %}Audit Logs - Admin Dashboard{% endblock %}
+
+{% block breadcrumb %}
+<li class="breadcrumb-item"><a href="/admin">Admin</a></li>
+<li class="breadcrumb-item active">Audit Logs</li>
+{% endblock %}
+
+{% block content %}
+<div class="page-title">
+    <h1>Audit Logs</h1>
+    <p class="page-subtitle">Track user activities and system changes</p>
+</div>
+
+<!-- Audit Logs Section -->
+<div class="admin-card">
+    <div class="admin-card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0">User Activity Audit Logs</h5>
+        <div class="d-flex gap-2">
+            <select class="form-select form-select-sm" id="auditActionFilter" style="width: auto;">
+                <option value="">All Actions</option>
+                <option value="user_created">User Created</option>
+                <option value="user_updated">User Updated</option>
+                <option value="user_deleted">User Deleted</option>
+                <option value="password_changed">Password Changed</option>
+                <option value="admin_status_changed">Admin Status Changed</option>
+            </select>
+            <input type="text" class="form-control form-control-sm" id="auditUserFilter" 
+                   placeholder="Filter by username..." style="width: 200px;">
+            <button class="btn btn-sm btn-primary" onclick="loadAuditLogs(1)">
+                <i class="bi bi-funnel"></i> Filter
+            </button>
+        </div>
+    </div>
+    <div class="admin-card-body">
+        <div class="table-responsive">
+            <table class="table table-sm table-hover" id="auditLogsTable">
+                <thead>
+                    <tr>
+                        <th style="width: 140px;">Timestamp</th>
+                        <th>Performed By</th>
+                        <th>Action</th>
+                        <th>Affected User</th>
+                        <th>Details</th>
+                        <th style="width: 120px;">IP Address</th>
+                    </tr>
+                </thead>
+                <tbody id="auditLogsTableBody">
+                    <tr>
+                        <td colspan="6" class="text-center">
+                            <div class="spinner-border spinner-border-sm" role="status">
+                                <span class="visually-hidden">Loading...</span>
+                            </div>
+                            Loading audit logs...
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+        
+        <!-- Pagination -->
+        <nav aria-label="Audit logs pagination" id="auditLogsPagination" style="display: none;">
+            <ul class="pagination justify-content-center" id="auditLogsPaginationList">
+            </ul>
+        </nav>
+    </div>
+</div>
+
+<script>
+// Audit Logs functionality
+let currentAuditLogsPage = 1;
+const auditLogsPerPage = 20;
+
+// Load and display audit logs
+async function loadAuditLogs(page = 1) {
+    try {
+        const actionFilter = document.getElementById('auditActionFilter').value;
+        const userFilter = document.getElementById('auditUserFilter').value.trim();
+        
+        let url = `/api/v1/admin/audit_logs?page=${page}&per_page=${auditLogsPerPage}`;
+        if (actionFilter) {
+            url += `&action=${encodeURIComponent(actionFilter)}`;
+        }
+        if (userFilter) {
+            url += `&affected_user=${encodeURIComponent(userFilter)}`;
+        }
+        
+        const response = await fetch(url, {
+            credentials: 'include'
+        });
+        
+        if (response.ok) {
+            const data = await response.json();
+            displayAuditLogs(data);
+            updateAuditLogsPagination(data);
+            currentAuditLogsPage = page;
+        } else {
+            throw new Error('Failed to load audit logs');
+        }
+    } catch (error) {
+        console.error('Error loading audit logs:', error);
+        document.getElementById('auditLogsTableBody').innerHTML = 
+            '<tr><td colspan="6" class="text-center text-danger">Failed to load audit logs</td></tr>';
+    }
+}
+
+// Display audit logs in table
+function displayAuditLogs(data) {
+    const tbody = document.getElementById('auditLogsTableBody');
+    
+    if (data.items.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No audit logs found</td></tr>';
+        return;
+    }
+    
+    let html = '';
+    data.items.forEach(log => {
+        const timestamp = new Date(log.timestamp).toLocaleString();
+        const actionClass = getActionBadgeClass(log.action);
+        
+        let detailsText = '';
+        if (log.details) {
+            if (log.details.changes) {
+                const changes = Object.keys(log.details.changes);
+                detailsText = `Changed: ${changes.join(', ')}`;
+            } else if (log.action === 'user_created') {
+                detailsText = `Admin: ${log.details.is_admin ? 'Yes' : 'No'}`;
+            } else if (log.action === 'user_deleted') {
+                detailsText = `Was Admin: ${log.details.was_admin ? 'Yes' : 'No'}`;
+            }
+        }
+        
+        html += `
+            <tr>
+                <td><small>${timestamp}</small></td>
+                <td><strong>${log.performing_username}</strong></td>
+                <td><span class="badge ${actionClass}">${formatActionName(log.action)}</span></td>
+                <td><strong>${log.affected_username}</strong></td>
+                <td><small class="text-muted">${detailsText}</small></td>
+                <td><small class="font-monospace">${log.ip_address || '-'}</small></td>
+            </tr>
+        `;
+    });
+    
+    tbody.innerHTML = html;
+}
+
+// Get CSS class for action badge
+function getActionBadgeClass(action) {
+    switch (action) {
+        case 'user_created': return 'bg-success';
+        case 'user_updated': return 'bg-primary';
+        case 'user_deleted': return 'bg-danger';
+        case 'password_changed': return 'bg-warning';
+        case 'admin_status_changed': return 'bg-info';
+        default: return 'bg-secondary';
+    }
+}
+
+// Format action name for display
+function formatActionName(action) {
+    switch (action) {
+        case 'user_created': return 'Created';
+        case 'user_updated': return 'Updated';
+        case 'user_deleted': return 'Deleted';
+        case 'password_changed': return 'Password';
+        case 'admin_status_changed': return 'Admin Status';
+        default: return action;
+    }
+}
+
+// Update audit logs pagination
+function updateAuditLogsPagination(data) {
+    const pagination = document.getElementById('auditLogsPagination');
+    const paginationList = document.getElementById('auditLogsPaginationList');
+    
+    if (data.total_pages <= 1) {
+        pagination.style.display = 'none';
+        return;
+    }
+    
+    pagination.style.display = 'block';
+    
+    let html = '';
+    
+    // Previous button
+    html += `
+        <li class="page-item ${data.page <= 1 ? 'disabled' : ''}">
+            <a class="page-link" href="#" onclick="loadAuditLogs(${data.page - 1})">Previous</a>
+        </li>
+    `;
+    
+    // Page numbers (show max 5 pages around current)
+    const startPage = Math.max(1, data.page - 2);
+    const endPage = Math.min(data.total_pages, data.page + 2);
+    
+    if (startPage > 1) {
+        html += `<li class="page-item"><a class="page-link" href="#" onclick="loadAuditLogs(1)">1</a></li>`;
+        if (startPage > 2) {
+            html += `<li class="page-item disabled"><span class="page-link">...</span></li>`;
+        }
+    }
+    
+    for (let i = startPage; i <= endPage; i++) {
+        html += `
+            <li class="page-item ${i === data.page ? 'active' : ''}">
+                <a class="page-link" href="#" onclick="loadAuditLogs(${i})">${i}</a>
+            </li>
+        `;
+    }
+    
+    if (endPage < data.total_pages) {
+        if (endPage < data.total_pages - 1) {
+            html += `<li class="page-item disabled"><span class="page-link">...</span></li>`;
+        }
+        html += `<li class="page-item"><a class="page-link" href="#" onclick="loadAuditLogs(${data.total_pages})">${data.total_pages}</a></li>`;
+    }
+    
+    // Next button
+    html += `
+        <li class="page-item ${data.page >= data.total_pages ? 'disabled' : ''}">
+            <a class="page-link" href="#" onclick="loadAuditLogs(${data.page + 1})">Next</a>
+        </li>
+    `;
+    
+    paginationList.innerHTML = html;
+}
+
+// Load audit logs on page load
+document.addEventListener('DOMContentLoaded', () => {
+    loadAuditLogs(); // Load audit logs
+});
+</script>
+{% endblock %}

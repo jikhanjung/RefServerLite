@@ -1,9 +1,11 @@
 from peewee import *
 import datetime
 import json
+import os
 import warnings
 from typing import List, Optional
 from passlib.context import CryptContext
+from cryptography.fernet import Fernet
 
 # Suppress bcrypt warnings
 warnings.filterwarnings("ignore", message=".*bcrypt.*", category=UserWarning)
@@ -20,9 +22,16 @@ class BaseModel(Model):
 class User(BaseModel):
     username = CharField(unique=True)
     password_hash = CharField()
+    email = CharField(null=True)
     is_admin = BooleanField(default=False)
     created_at = DateTimeField(default=datetime.datetime.now)
     last_login = DateTimeField(null=True)
+    
+    # Zotero integration fields
+    zotero_library_id = CharField(null=True)
+    zotero_library_type = CharField(null=True)  # 'user' or 'group'
+    zotero_api_key_encrypted = CharField(null=True)
+    zotero_last_sync = DateTimeField(null=True)
     
     def set_password(self, password: str):
         """Hash and set password"""
@@ -36,14 +45,87 @@ class User(BaseModel):
         """Update last login timestamp"""
         self.last_login = datetime.datetime.now()
         self.save()
+    
+    def set_zotero_api_key(self, api_key: str):
+        """Encrypt and set Zotero API key"""
+        if not api_key:
+            self.zotero_api_key_encrypted = None
+            return
+        
+        encryption_key = self._get_encryption_key()
+        cipher_suite = Fernet(encryption_key.encode() if isinstance(encryption_key, str) else encryption_key)
+        self.zotero_api_key_encrypted = cipher_suite.encrypt(api_key.encode()).decode()
+    
+    def get_zotero_api_key(self) -> Optional[str]:
+        """Decrypt and get Zotero API key"""
+        if not self.zotero_api_key_encrypted:
+            return None
+        
+        try:
+            encryption_key = self._get_encryption_key()
+            cipher_suite = Fernet(encryption_key.encode() if isinstance(encryption_key, str) else encryption_key)
+            return cipher_suite.decrypt(self.zotero_api_key_encrypted.encode()).decode()
+        except Exception:
+            # If decryption fails, return None
+            return None
+    
+    def has_zotero_config(self) -> bool:
+        """Check if user has Zotero configuration"""
+        return bool(self.zotero_library_id and self.zotero_api_key_encrypted)
+    
+    def clear_zotero_config(self):
+        """Clear Zotero configuration"""
+        self.zotero_library_id = None
+        self.zotero_api_key_encrypted = None
+        self.zotero_last_sync = None
+    
+    @staticmethod
+    def _get_encryption_key() -> str:
+        """Get or generate encryption key for Zotero API keys"""
+        # First try environment variable
+        encryption_key = os.getenv('ZOTERO_ENCRYPTION_KEY')
+        if encryption_key:
+            return encryption_key
+        
+        # Try to load from file
+        key_file_path = '/app/refdata/encryption.key'
+        if os.path.exists(key_file_path):
+            try:
+                with open(key_file_path, 'r') as f:
+                    return f.read().strip()
+            except Exception:
+                pass
+        
+        # Generate new key and save to file
+        new_key = Fernet.generate_key().decode()
+        try:
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(key_file_path), exist_ok=True)
+            with open(key_file_path, 'w') as f:
+                f.write(new_key)
+            # Set restrictive permissions
+            os.chmod(key_file_path, 0o600)
+            print(f"🔑 Generated new encryption key and saved to {key_file_path}")
+        except Exception as e:
+            print(f"⚠️ Could not save encryption key to file: {e}")
+            # Fall back to environment variable for this session
+            os.environ['ZOTERO_ENCRYPTION_KEY'] = new_key
+        
+        return new_key
 
 class Paper(BaseModel):
     doc_id = CharField(primary_key=True)
     filename = CharField()
     file_path = CharField()
     ocr_text = TextField(null=True)
+    uploaded_by = ForeignKeyField(User, backref='uploaded_papers', null=True, on_delete='SET NULL')
     created_at = DateTimeField(default=datetime.datetime.now)
     updated_at = DateTimeField(default=datetime.datetime.now)
+    
+    # Duplicate detection fields
+    duplicate_check_completed = BooleanField(default=False)
+    duplicate_checked_at = DateTimeField(null=True)
+    has_potential_duplicates = BooleanField(default=False)
     
     def save(self, *args, **kwargs):
         self.updated_at = datetime.datetime.now()
@@ -82,8 +164,15 @@ class ProcessingJob(BaseModel):
     progress_percentage = IntegerField(default=0)
     error_message = TextField(null=True)
     created_at = DateTimeField(default=datetime.datetime.now)
-    updated_at = DateTimeField(default=datetime.datetime.now) # <-- 이 줄 추가
+    updated_at = DateTimeField(default=datetime.datetime.now)
     completed_at = DateTimeField(null=True)
+    
+    # Additional fields for different job types
+    job_type = CharField(default='pdf_processing')  # pdf_processing, zotero_sync
+    user_id = ForeignKeyField(User, backref='processing_jobs', null=True, on_delete='CASCADE')
+    total_steps = IntegerField(default=4)  # Default for PDF processing
+    parameters = TextField(null=True)  # JSON string for job-specific parameters
+    result = TextField(null=True)  # JSON string for job results
     
     def save(self, *args, **kwargs): # <-- 이 save 메서드 추가
         self.updated_at = datetime.datetime.now()
@@ -198,6 +287,32 @@ class ProcessingJob(BaseModel):
                 'completed_at': self.chunking_completed_at.isoformat() if self.chunking_completed_at else None
             }
         }
+    
+    def get_parameters(self) -> dict:
+        """Get parameters as dictionary"""
+        if self.parameters:
+            try:
+                return json.loads(self.parameters)
+            except json.JSONDecodeError:
+                return {}
+        return {}
+    
+    def set_parameters(self, parameters: dict):
+        """Set parameters from dictionary"""
+        self.parameters = json.dumps(parameters) if parameters else None
+    
+    def get_result(self) -> dict:
+        """Get result as dictionary"""
+        if self.result:
+            try:
+                return json.loads(self.result)
+            except json.JSONDecodeError:
+                return {}
+        return {}
+    
+    def set_result(self, result: dict):
+        """Set result from dictionary"""
+        self.result = json.dumps(result) if result else None
 
 class PageText(BaseModel):
     paper = ForeignKeyField(Paper, backref='page_texts', on_delete='CASCADE')
@@ -283,10 +398,156 @@ class ZoteroLink(BaseModel):
         """Set tags from a list"""
         self.tags = json.dumps(tags)
 
+class ZoteroItem(BaseModel):
+    """Stores complete Zotero item metadata - includes all item types including attachments"""
+    zotero_key = CharField(unique=True, index=True)
+    library_id = CharField(index=True)
+    item_type = CharField()  # journalArticle, book, webpage, note, attachment, etc.
+    data = TextField()  # JSON - complete Zotero item data
+    version = IntegerField()
+    user = ForeignKeyField(User, backref='zotero_items')
+    parent_key = CharField(null=True)  # For child items (notes, attachments)
+    is_attachment = BooleanField(default=False)  # Flag for attachment items
+    content_type = CharField(null=True)  # For attachments: application/pdf, text/html, etc.
+    filename = CharField(null=True)  # For attachments
+    link_mode = CharField(null=True)  # For attachments: linked_file, imported_file, linked_url
+    url = CharField(null=True)  # For linked attachments
+    created_date = DateTimeField(null=True)  # Zotero's dateAdded
+    modified_date = DateTimeField(null=True)  # Zotero's dateModified
+    synced_at = DateTimeField(default=datetime.datetime.now)
+    
+    def get_data(self) -> dict:
+        """Get data as dictionary"""
+        try:
+            return json.loads(self.data)
+        except json.JSONDecodeError:
+            return {}
+    
+    def set_data(self, data: dict):
+        """Set data from dictionary"""
+        self.data = json.dumps(data)
+    
+    def is_pdf_attachment(self) -> bool:
+        """Check if this is a PDF attachment"""
+        return self.is_attachment and self.content_type == 'application/pdf'
+    
+    class Meta:
+        indexes = (
+            (('library_id', 'zotero_key'), True),  # Unique per library
+            (('user', 'item_type'), False),  # For filtering by type
+            (('parent_key',), False),  # For finding child items
+            (('is_attachment', 'content_type'), False),  # For finding attachments
+        )
+
+class ZoteroCollection(BaseModel):
+    """Stores Zotero collection hierarchy"""
+    collection_key = CharField(index=True)
+    library_id = CharField(index=True)
+    name = CharField()
+    parent_key = CharField(null=True)  # For subcollections
+    user = ForeignKeyField(User, backref='zotero_collections')
+    data = TextField(null=True)  # JSON - additional collection data
+    version = IntegerField()
+    created_at = DateTimeField(default=datetime.datetime.now)
+    updated_at = DateTimeField(default=datetime.datetime.now)
+    
+    class Meta:
+        indexes = (
+            (('collection_key', 'user'), True),  # Unique per user
+        )
+    
+    def get_data(self) -> dict:
+        """Get additional data as dictionary"""
+        if self.data:
+            try:
+                return json.loads(self.data)
+            except json.JSONDecodeError:
+                return {}
+        return {}
+    
+    def set_data(self, data: dict):
+        """Set additional data from dictionary"""
+        self.data = json.dumps(data) if data else None
+
+class ZoteroItemPaper(BaseModel):
+    """Many-to-many relationship between Zotero items and Papers"""
+    zotero_item = ForeignKeyField(ZoteroItem, backref='paper_links')
+    paper = ForeignKeyField(Paper, backref='zotero_links')
+    relationship_type = CharField(default='attachment')  # 'attachment', 'note', 'child'
+    created_at = DateTimeField(default=datetime.datetime.now)
+    
+    class Meta:
+        indexes = (
+            (('zotero_item', 'paper'), True),  # Unique relationship
+            (('paper', 'relationship_type'), False),  # For finding all Zotero items for a paper
+        )
+
+class PotentialDuplicate(BaseModel):
+    """Stores potential duplicate relationships between papers"""
+    paper1 = ForeignKeyField(Paper, backref='potential_duplicates_as_paper1')
+    paper2 = ForeignKeyField(Paper, backref='potential_duplicates_as_paper2')
+    similarity_score = FloatField()  # Cosine similarity score (0.0 to 1.0)
+    detection_method = CharField(default='embedding')  # 'embedding', 'metadata', 'hybrid'
+    status = CharField(default='pending')  # 'pending', 'resolved', 'ignored'
+    resolved_by = ForeignKeyField(User, backref='resolved_duplicates', null=True)
+    resolved_at = DateTimeField(null=True)
+    resolution_action = CharField(null=True)  # 'merge', 'keep_both', 'delete_duplicate'
+    created_at = DateTimeField(default=datetime.datetime.now)
+    
+    class Meta:
+        indexes = (
+            (('paper1', 'paper2'), True),  # Unique relationship
+            (('status',), False),  # For filtering by status
+            (('similarity_score',), False),  # For sorting by similarity
+        )
+    
+    def get_other_paper(self, paper):
+        """Get the other paper in this duplicate relationship"""
+        if self.paper1 == paper:
+            return self.paper2
+        elif self.paper2 == paper:
+            return self.paper1
+        else:
+            return None
+
+class UserAuditLog(BaseModel):
+    """Audit log for user management actions"""
+    timestamp = DateTimeField(default=datetime.datetime.now)
+    performing_user = ForeignKeyField(User, backref='performed_actions', on_delete='SET NULL', null=True)
+    performing_username = CharField()  # Store username for cases where user is deleted
+    affected_user = ForeignKeyField(User, backref='audit_logs', on_delete='SET NULL', null=True)
+    affected_username = CharField()  # Store username for cases where user is deleted
+    action = CharField()  # 'user_created', 'user_updated', 'user_deleted', 'password_changed', 'admin_status_changed'
+    details = TextField(null=True)  # JSON blob for extra info
+    ip_address = CharField(null=True)
+    user_agent = CharField(null=True)
+    
+    class Meta:
+        table_name = 'user_audit_log'
+        indexes = [
+            (('timestamp',), False),
+            (('performing_user', 'timestamp'), False),
+            (('affected_user', 'timestamp'), False),
+            (('action', 'timestamp'), False),
+        ]
+    
+    def get_details(self) -> dict:
+        """Get details as dictionary"""
+        if self.details:
+            try:
+                return json.loads(self.details)
+            except json.JSONDecodeError:
+                return {}
+        return {}
+    
+    def set_details(self, details: dict):
+        """Set details from dictionary"""
+        self.details = json.dumps(details)
+
 def create_tables():
     """Create all database tables"""
     with db:
-        db.create_tables([User, Paper, Metadata, ProcessingJob, PageText, SemanticChunk, ZoteroLink])
+        db.create_tables([User, Paper, Metadata, ProcessingJob, PageText, SemanticChunk, ZoteroLink, ZoteroItem, ZoteroCollection, ZoteroItemPaper, PotentialDuplicate, UserAuditLog])
 
 def create_admin_user():
     """Create default admin user if it doesn't exist"""

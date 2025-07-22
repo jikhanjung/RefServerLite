@@ -1,0 +1,26 @@
+{% extends "admin_base.html" %}
+
+{% block title %}Zotero Sync - Admin Dashboard{% endblock %}
+
+{% block breadcrumb %}
+<li class="breadcrumb-item"><a href="/admin">Admin</a></li>
+<li class="breadcrumb-item">Zotero</li>
+<li class="breadcrumb-item active">Sync</li>
+{% endblock %}
+
+{% block content %}
+<div class="page-title">
+    <h1>Zotero Sync</h1>
+    <p class="page-subtitle">Import and synchronize documents from Zotero library</p>
+</div>
+
+<div class="admin-card">
+    <div class="admin-card-header">
+        <h5 class="mb-0">Library Synchronization</h5>
+    </div>
+    <div class="admin-card-body">
+        <p class="text-muted">This section will contain the Zotero synchronization interface.</p>
+        <p><em>Import functionality will be integrated here.</em></p>
+    </div>
+</div>
+{% endblock %}

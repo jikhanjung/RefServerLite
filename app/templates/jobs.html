@@ -99,8 +99,8 @@
                             <tr>
                                 <td class="job-id" title="{{ job.job_id }}">{{ job.job_id[:8] }}...</td>
                                 <td>
-                                    {% if job.doc_id %}
-                                    <a href="/admin/document/{{ job.doc_id }}">{{ job.filename }}</a>
+                                    {% if job.paper %}
+                                    <a href="/admin/document/{{ job.paper.doc_id }}">{{ job.filename }}</a>
                                     {% else %}
                                     {{ job.filename }}
                                     {% endif %}
@@ -142,8 +142,8 @@
                                         View Error
                                     </button>
                                     {% endif %}
-                                    {% if job.doc_id %}
-                                    <a href="/admin/document/{{ job.doc_id }}" class="btn btn-sm btn-primary">View Doc</a>
+                                    {% if job.paper %}
+                                    <a href="/admin/document/{{ job.paper.doc_id }}" class="btn btn-sm btn-primary">View Doc</a>
                                     {% endif %}
                                 </td>
                             </tr>

@@ -1,0 +1,231 @@
+{% extends "admin_base.html" %}
+
+{% block title %}Duplicate Management - Admin Dashboard{% endblock %}
+
+{% block breadcrumb %}
+<li class="breadcrumb-item"><a href="/admin">Admin</a></li>
+<li class="breadcrumb-item active">Duplicates</li>
+{% endblock %}
+
+{% block content %}
+<div class="page-title">
+    <h1>Duplicate Management</h1>
+    <p class="page-subtitle">Identify and manage potential duplicate documents</p>
+</div>
+
+<div class="admin-card">
+    <div class="admin-card-header">
+        <h5 class="mb-0">Duplicate Detection</h5>
+    </div>
+    <div class="admin-card-body">
+        <div id="duplicatesAlert" class="alert" style="display: none;"></div>
+        
+        <div class="mb-3">
+            <div class="row">
+                <div class="col-md-6">
+                    <button type="button" class="btn btn-primary" onclick="runDuplicateCheck()">
+                        <i class="bi bi-search"></i> Check All for Duplicates
+                    </button>
+                </div>
+                <div class="col-md-6">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="showResolvedDuplicates">
+                        <label class="form-check-label" for="showResolvedDuplicates">
+                            Show resolved duplicates
+                        </label>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div id="duplicatesList">
+            <div class="text-center">
+                <p class="text-muted">Click "Check All for Duplicates" to find potential duplicates.</p>
+            </div>
+        </div>
+        
+        <div id="duplicatesLoading" style="display: none;">
+            <div class="text-center">
+                <div class="spinner-border" role="status">
+                    <span class="visually-hidden">Loading...</span>
+                </div>
+                <p class="mt-2">Checking for duplicates...</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+async function runDuplicateCheck() {
+    const loadingDiv = document.getElementById('duplicatesLoading');
+    const listDiv = document.getElementById('duplicatesList');
+    
+    loadingDiv.style.display = 'block';
+    listDiv.innerHTML = '';
+    
+    try {
+        const response = await fetch('/api/v1/admin/check_all_duplicates', {
+            method: 'POST',
+            credentials: 'include'
+        });
+        
+        if (response.ok) {
+            const result = await response.json();
+            showDuplicatesAlert(`Processed ${result.processed} papers, found ${result.total_duplicates} potential duplicates.`, 'success');
+            
+            // Reload duplicates list
+            await loadDuplicatesList();
+        } else {
+            const error = await response.json();
+            showDuplicatesAlert(`Error: ${error.detail}`, 'danger');
+        }
+    } catch (error) {
+        console.error('Error running duplicate check:', error);
+        showDuplicatesAlert('Failed to run duplicate check. Please try again.', 'danger');
+    } finally {
+        loadingDiv.style.display = 'none';
+    }
+}
+
+async function loadDuplicatesList() {
+    const showResolved = document.getElementById('showResolvedDuplicates').checked;
+    const status = showResolved ? 'resolved' : 'pending';
+    
+    try {
+        const response = await fetch(`/api/v1/admin/potential_duplicates?status=${status}&limit=50`, {
+            credentials: 'include'
+        });
+        
+        if (response.ok) {
+            const data = await response.json();
+            displayDuplicatesList(data.duplicates);
+        } else {
+            showDuplicatesAlert('Failed to load duplicates list.', 'danger');
+        }
+    } catch (error) {
+        console.error('Error loading duplicates:', error);
+        showDuplicatesAlert('Failed to load duplicates list.', 'danger');
+    }
+}
+
+function displayDuplicatesList(duplicates) {
+    const listDiv = document.getElementById('duplicatesList');
+    
+    if (duplicates.length === 0) {
+        listDiv.innerHTML = '<div class="text-center"><p class="text-muted">No duplicates found.</p></div>';
+        return;
+    }
+    
+    let html = '<div class="table-responsive"><table class="table table-hover"><thead><tr>' +
+               '<th>Similarity</th><th>Document 1</th><th>Document 2</th><th>Actions</th></tr></thead><tbody>';
+    
+    duplicates.forEach(dup => {
+        const similarity = (dup.similarity_score * 100).toFixed(1);
+        const badgeClass = similarity > 95 ? 'bg-danger' : similarity > 85 ? 'bg-warning' : 'bg-info';
+        
+        html += `
+            <tr>
+                <td><span class="badge ${badgeClass}">${similarity}%</span></td>
+                <td>
+                    <strong>${dup.paper1.filename}</strong><br>
+                    <small class="text-muted">${dup.paper1.metadata.title || 'No title'}</small><br>
+                    <small class="text-muted">${(dup.paper1.metadata.authors || []).join(', ')}</small>
+                </td>
+                <td>
+                    <strong>${dup.paper2.filename}</strong><br>
+                    <small class="text-muted">${dup.paper2.metadata.title || 'No title'}</small><br>
+                    <small class="text-muted">${(dup.paper2.metadata.authors || []).join(', ')}</small>
+                </td>
+                <td>
+                    ${dup.status === 'pending' ? `
+                        <div class="btn-group" role="group">
+                            <button class="btn btn-sm btn-success" onclick="resolveDuplicate(${dup.id}, 'keep_both')">
+                                Keep Both
+                            </button>
+                            <button class="btn btn-sm btn-warning" onclick="resolveDuplicate(${dup.id}, 'ignore')">
+                                Ignore
+                            </button>
+                            <div class="btn-group" role="group">
+                                <button class="btn btn-sm btn-danger dropdown-toggle" data-bs-toggle="dropdown">
+                                    Delete One
+                                </button>
+                                <ul class="dropdown-menu">
+                                    <li><a class="dropdown-item" href="#" onclick="resolveDuplicate(${dup.id}, 'delete_duplicate', '${dup.paper1.doc_id}')">
+                                        Keep "${dup.paper1.filename}"
+                                    </a></li>
+                                    <li><a class="dropdown-item" href="#" onclick="resolveDuplicate(${dup.id}, 'delete_duplicate', '${dup.paper2.doc_id}')">
+                                        Keep "${dup.paper2.filename}"
+                                    </a></li>
+                                </ul>
+                            </div>
+                        </div>
+                    ` : `
+                        <span class="badge bg-secondary">${dup.status}</span>
+                    `}
+                </td>
+            </tr>
+        `;
+    });
+    
+    html += '</tbody></table></div>';
+    listDiv.innerHTML = html;
+}
+
+async function resolveDuplicate(duplicateId, action, keepDocId = null) {
+    const payload = {
+        duplicate_id: duplicateId,
+        action: action
+    };
+    
+    if (keepDocId) {
+        payload.keep_doc_id = keepDocId;
+    }
+    
+    try {
+        const response = await fetch('/api/v1/admin/resolve_duplicate', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            credentials: 'include',
+            body: JSON.stringify(payload)
+        });
+        
+        if (response.ok) {
+            const result = await response.json();
+            showDuplicatesAlert(result.message, 'success');
+            
+            // Reload duplicates list
+            await loadDuplicatesList();
+        } else {
+            const error = await response.json();
+            showDuplicatesAlert(`Error: ${error.detail}`, 'danger');
+        }
+    } catch (error) {
+        console.error('Error resolving duplicate:', error);
+        showDuplicatesAlert('Failed to resolve duplicate. Please try again.', 'danger');
+    }
+}
+
+function showDuplicatesAlert(message, type) {
+    const alertDiv = document.getElementById('duplicatesAlert');
+    alertDiv.className = `alert alert-${type}`;
+    alertDiv.textContent = message;
+    alertDiv.style.display = 'block';
+    
+    if (type === 'success') {
+        setTimeout(() => {
+            alertDiv.style.display = 'none';
+        }, 3000);
+    }
+}
+
+// Event listener for show resolved checkbox
+document.getElementById('showResolvedDuplicates').addEventListener('change', loadDuplicatesList);
+
+// Load duplicates list on page load
+document.addEventListener('DOMContentLoaded', () => {
+    loadDuplicatesList();
+});
+</script>
+{% endblock %}

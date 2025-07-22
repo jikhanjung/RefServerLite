@@ -98,6 +98,15 @@ def check_session_auth(request: Request) -> Optional[User]:
     except User.DoesNotExist:
         return None
 
+def require_session_user(request: Request):
+    """Require user session for web interface (any authenticated user)"""
+    user = check_session_auth(request)
+    if not user:
+        from fastapi.responses import RedirectResponse
+        # Redirect to login page instead of raising exception
+        return RedirectResponse(url="/login", status_code=302)
+    return user
+
 def require_session_admin(request: Request):
     """Require admin session for web interface"""
     user = check_session_auth(request)

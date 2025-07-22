@@ -1,0 +1,26 @@
+{% extends "admin_base.html" %}
+
+{% block title %}System Settings - Admin Dashboard{% endblock %}
+
+{% block breadcrumb %}
+<li class="breadcrumb-item"><a href="/admin">Admin</a></li>
+<li class="breadcrumb-item">System</li>
+<li class="breadcrumb-item active">Settings</li>
+{% endblock %}
+
+{% block content %}
+<div class="page-title">
+    <h1>System Settings</h1>
+    <p class="page-subtitle">Configure system-wide settings and preferences</p>
+</div>
+
+<div class="admin-card">
+    <div class="admin-card-header">
+        <h5 class="mb-0">Configuration</h5>
+    </div>
+    <div class="admin-card-body">
+        <p class="text-muted">This section will contain system configuration options.</p>
+        <p><em>Additional settings will be added here as needed.</em></p>
+    </div>
+</div>
+{% endblock %}

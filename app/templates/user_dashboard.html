@@ -1,0 +1,200 @@
+{% extends "user_base.html" %}
+
+{% block title %}Dashboard - RefServerLite{% endblock %}
+
+{% block content %}
+<div class="page-title">
+    <h1>Welcome, {{ current_user.username }}!</h1>
+    <p class="page-subtitle">Manage your documents and Zotero integration</p>
+</div>
+
+<!-- Stats Overview -->
+<div class="row mb-4">
+    <div class="col-md-3 col-sm-6">
+        <div class="stats-card primary">
+            <div class="stats-number" id="totalPapers">0</div>
+            <div class="stats-label">Total Papers</div>
+        </div>
+    </div>
+    <div class="col-md-3 col-sm-6">
+        <div class="stats-card success">
+            <div class="stats-number" id="completedPapers">0</div>
+            <div class="stats-label">Processed</div>
+        </div>
+    </div>
+    <div class="col-md-3 col-sm-6">
+        <div class="stats-card warning">
+            <div class="stats-number" id="processingPapers">0</div>
+            <div class="stats-label">Processing</div>
+        </div>
+    </div>
+    <div class="col-md-3 col-sm-6">
+        <div class="stats-card info">
+            <div class="stats-number" id="zoteroItems">0</div>
+            <div class="stats-label">Zotero Items</div>
+        </div>
+    </div>
+</div>
+
+<!-- Quick Actions -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="user-card">
+            <div class="user-card-header">
+                <h5 class="mb-0">Quick Actions</h5>
+            </div>
+            <div class="user-card-body">
+                <div class="row">
+                    <div class="col-md-4">
+                        <a href="/" class="btn btn-primary w-100 mb-2">
+                            <i class="bi bi-upload me-2"></i>Upload PDF
+                        </a>
+                    </div>
+                    <div class="col-md-4">
+                        <a href="/dashboard/my-papers" class="btn btn-outline-primary w-100 mb-2">
+                            <i class="bi bi-file-earmark-pdf me-2"></i>View My Papers
+                        </a>
+                    </div>
+                    <div class="col-md-4">
+                        <a href="/dashboard/zotero/library" class="btn btn-outline-secondary w-100 mb-2">
+                            <i class="bi bi-collection me-2"></i>Browse Zotero
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Recent Papers -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="user-card">
+            <div class="user-card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Recent Papers</h5>
+                <a href="/dashboard/my-papers" class="btn btn-sm btn-outline-primary">View All</a>
+            </div>
+            <div class="user-card-body">
+                <div id="recentPapers">
+                    <div class="text-center py-4">
+                        <div class="spinner-border text-primary" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                        <p class="mt-2 text-muted">Loading recent papers...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Recent Activity -->
+<div class="row">
+    <div class="col-12">
+        <div class="user-card">
+            <div class="user-card-header">
+                <h5 class="mb-0">Activity Overview</h5>
+            </div>
+            <div class="user-card-body">
+                <div id="activityOverview">
+                    <p class="text-muted mb-0">Your document processing and Zotero sync activity will appear here.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', async function() {
+    // Load dashboard data
+    await loadDashboardStats();
+    await loadRecentPapers();
+    
+    // Set up auto-refresh
+    startAutoRefresh(60000); // Refresh every minute
+});
+
+async function loadDashboardStats() {
+    try {
+        // Load user papers stats
+        const papersResponse = await fetchUserData('/api/v1/users/me/papers?per_page=1000');
+        const papers = papersResponse.papers || [];
+        
+        const totalPapers = papers.length;
+        const completedPapers = papers.filter(p => p.status === 'completed').length;
+        const processingPapers = papers.filter(p => p.status === 'processing' || p.status === 'pending').length;
+        
+        document.getElementById('totalPapers').textContent = totalPapers;
+        document.getElementById('completedPapers').textContent = completedPapers;
+        document.getElementById('processingPapers').textContent = processingPapers;
+        
+        // Load Zotero stats if configured
+        try {
+            const zoteroResponse = await fetchUserData('/api/v1/users/me/zotero/items?per_page=1');
+            const zoteroTotal = zoteroResponse.total || 0;
+            document.getElementById('zoteroItems').textContent = zoteroTotal;
+        } catch (error) {
+            console.log('Zotero not configured or error loading items');
+            document.getElementById('zoteroItems').textContent = '-';
+        }
+        
+    } catch (error) {
+        console.error('Error loading dashboard stats:', error);
+        showError('stats', 'Failed to load statistics');
+    }
+}
+
+async function loadRecentPapers() {
+    try {
+        const response = await fetchUserData('/api/v1/users/me/papers?per_page=5');
+        const papers = response.papers || [];
+        
+        const container = document.getElementById('recentPapers');
+        
+        if (papers.length === 0) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <i class="bi bi-file-earmark-pdf"></i>
+                    <h4>No papers yet</h4>
+                    <p>Upload your first PDF to get started!</p>
+                    <a href="/" class="btn btn-primary">Upload PDF</a>
+                </div>
+            `;
+            return;
+        }
+        
+        const papersHtml = papers.map(paper => `
+            <div class="d-flex align-items-center py-3 border-bottom">
+                <div class="flex-shrink-0 me-3">
+                    <i class="bi bi-file-earmark-pdf fs-3 text-primary"></i>
+                </div>
+                <div class="flex-grow-1">
+                    <h6 class="mb-1">
+                        <a href="/document/${paper.doc_id}" class="text-decoration-none">
+                            ${paper.title || paper.filename}
+                        </a>
+                    </h6>
+                    <small class="text-muted">
+                        Uploaded ${formatDate(paper.upload_date)} • ${getStatusBadge(paper.status)}
+                    </small>
+                </div>
+            </div>
+        `).join('');
+        
+        container.innerHTML = papersHtml;
+        
+    } catch (error) {
+        console.error('Error loading recent papers:', error);
+        showError('recentPapers', 'Failed to load recent papers');
+    }
+}
+
+// Override the global refresh function
+function refreshData() {
+    loadDashboardStats();
+    loadRecentPapers();
+}
+</script>
+{% endblock %}

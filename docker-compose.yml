@@ -11,7 +11,19 @@ services:
       - PYTHONPATH=/app
       - LOG_LEVEL=INFO
       - CHROMA_TELEMETRY_DISABLED=1
+      # Optional: Set encryption key via environment variable
+      # If not set, a key will be automatically generated and saved to /app/refdata/encryption.key
+      - ZOTERO_ENCRYPTION_KEY=${ZOTERO_ENCRYPTION_KEY:-}
     restart: unless-stopped
+    # Resource limits to prevent CPU overload
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'  # Limit to 2 CPU cores
+          memory: 4G   # Limit to 4GB RAM
+        reservations:
+          cpus: '0.5'  # Reserve at least 0.5 CPU core
+          memory: 1G   # Reserve at least 1GB RAM
     # healthcheck:
     #   test: ["CMD", "curl", "-f", "http://localhost:8000/"]
     #   interval: 30s
