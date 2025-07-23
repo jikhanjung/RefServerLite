@@ -282,6 +282,32 @@ body {
     margin-bottom: 0.25rem;
     cursor: pointer;
     transition: background-color 0.2s ease;
+    display: flex !important;
+    align-items: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-align: left !important;
+    justify-content: flex-start !important;
+}
+
+/* Force left alignment for all collection tree elements */
+#collectionsTree {
+    text-align: left !important;
+}
+
+#collectionsTree * {
+    text-align: left !important;
+}
+
+#collectionsTree .collection-item {
+    display: flex !important;
+    text-align: left !important;
+    justify-content: flex-start !important;
+}
+
+#collectionsTree .collection-item span {
+    text-align: left !important;
+    justify-content: flex-start !important;
 }
 
 .collection-item:hover {
@@ -297,12 +323,32 @@ body {
 .collection-item .bi-chevron-down,
 .collection-item .bi-chevron-right {
     opacity: 0.7;
-    transition: opacity 0.2s ease;
+    transition: all 0.2s ease;
 }
 
 .collection-item:hover .bi-chevron-down,
 .collection-item:hover .bi-chevron-right {
     opacity: 1;
+}
+
+.collection-toggle {
+    padding: 0.2rem;
+    border-radius: 0.2rem;
+}
+
+.collection-toggle:hover {
+    background-color: rgba(0, 0, 0, 0.1);
+}
+
+/* Collection name styling for text overflow */
+.collection-item span {
+    text-overflow: ellipsis;
+    overflow: hidden;
+    min-width: 0;
+}
+
+.collection-item span:not(.badge) {
+    flex: 1;
 }
 
 /* Parent collection styles */
@@ -319,19 +365,13 @@ body {
     color: white;
 }
 
-/* Tree indentation visual guide */
+/* Tree indentation visual guide - DISABLED */
 .collection-item[style*="padding-left"] {
     position: relative;
 }
 
 .collection-item[style*="padding-left"]::before {
-    content: '';
-    position: absolute;
-    left: 4px;
-    top: 0;
-    bottom: 0;
-    width: 1px;
-    background-color: rgba(0, 0, 0, 0.1);
+    display: none; /* 세로줄 숨김 */
 }
 
 .collection-item.active[style*="padding-left"]::before {

@@ -88,7 +88,7 @@ class User(BaseModel):
             return encryption_key
         
         # Try to load from file
-        key_file_path = '/app/refdata/encryption.key'
+        key_file_path = os.path.join(os.getcwd(), 'refdata', 'encryption.key')
         if os.path.exists(key_file_path):
             try:
                 with open(key_file_path, 'r') as f:
@@ -416,6 +416,14 @@ class ZoteroItem(BaseModel):
     modified_date = DateTimeField(null=True)  # Zotero's dateModified
     synced_at = DateTimeField(default=datetime.datetime.now)
     
+    # Search optimization fields
+    title = CharField(null=True, index=True)
+    authors_text = TextField(null=True)  # "Author1; Author2; Author3"
+    journal = CharField(null=True, index=True)
+    year = IntegerField(null=True, index=True)
+    doi = CharField(null=True, index=True)
+    abstract = TextField(null=True)
+    
     def get_data(self) -> dict:
         """Get data as dictionary"""
         try:
@@ -430,6 +438,35 @@ class ZoteroItem(BaseModel):
     def is_pdf_attachment(self) -> bool:
         """Check if this is a PDF attachment"""
         return self.is_attachment and self.content_type == 'application/pdf'
+    
+    def get_authors_list(self) -> List[str]:
+        """Get authors as a list"""
+        if self.authors_text:
+            return [author.strip() for author in self.authors_text.split(';') if author.strip()]
+        return []
+    
+    def set_authors_from_creators(self, creators: List[dict]):
+        """Set authors from Zotero creators data"""
+        authors = []
+        for creator in creators:
+            if creator.get('creatorType') == 'author':
+                name_parts = []
+                if creator.get('firstName'):
+                    name_parts.append(creator['firstName'])
+                if creator.get('lastName'):
+                    name_parts.append(creator['lastName'])
+                if name_parts:
+                    authors.append(' '.join(name_parts))
+        self.authors_text = '; '.join(authors) if authors else None
+    
+    def extract_year_from_date(self, date_str: str) -> Optional[int]:
+        """Extract year from Zotero date string"""
+        if not date_str:
+            return None
+        # Zotero 날짜 형식: "2023-01-15", "2023", "01/2023" 등
+        import re
+        year_match = re.search(r'\b(19|20)\d{2}\b', str(date_str))
+        return int(year_match.group()) if year_match else None
     
     class Meta:
         indexes = (
@@ -468,6 +505,17 @@ class ZoteroCollection(BaseModel):
     def set_data(self, data: dict):
         """Set additional data from dictionary"""
         self.data = json.dumps(data) if data else None
+
+class ZoteroCollectionItem(BaseModel):
+    """Many-to-many relationship between ZoteroCollections and ZoteroItems"""
+    collection = ForeignKeyField(ZoteroCollection, backref='item_links')
+    item = ForeignKeyField(ZoteroItem, backref='collection_links')
+    created_at = DateTimeField(default=datetime.datetime.now)
+    
+    class Meta:
+        indexes = (
+            (('collection', 'item'), True),  # Unique relationship
+        )
 
 class ZoteroItemPaper(BaseModel):
     """Many-to-many relationship between Zotero items and Papers"""
@@ -547,7 +595,7 @@ class UserAuditLog(BaseModel):
 def create_tables():
     """Create all database tables"""
     with db:
-        db.create_tables([User, Paper, Metadata, ProcessingJob, PageText, SemanticChunk, ZoteroLink, ZoteroItem, ZoteroCollection, ZoteroItemPaper, PotentialDuplicate, UserAuditLog])
+        db.create_tables([User, Paper, Metadata, ProcessingJob, PageText, SemanticChunk, ZoteroLink, ZoteroItem, ZoteroCollection, ZoteroCollectionItem, ZoteroItemPaper, PotentialDuplicate, UserAuditLog])
 
 def create_admin_user():
     """Create default admin user if it doesn't exist"""

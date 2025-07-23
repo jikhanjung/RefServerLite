@@ -59,7 +59,7 @@ def main():
     print(f"Migration name: {migration_name}")
     
     # Create migration for all models including new duplicate prevention models
-    models_to_migrate = [User,Paper,Metadata,ProcessingJob,PageText,SemanticChunk,ZoteroLink,ZoteroCollection,ZoteroItemPaper,ZoteroItem,PotentialDuplicate]
+    models_to_migrate = [User,Paper,Metadata,ProcessingJob,PageText,SemanticChunk,ZoteroLink,ZoteroCollection,ZoteroCollectionItem,ZoteroItemPaper,ZoteroItem,PotentialDuplicate,UserAuditLog]
     
     try:
         ret = router.create(auto=models_to_migrate, name=migration_name)

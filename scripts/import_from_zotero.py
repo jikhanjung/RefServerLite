@@ -495,7 +495,7 @@ class ZoteroImporter:
                 logger.error(f"❌ Collection '{collection}' not found")
                 print("💡 Available collections:")
                 try:
-                    collections = zot.collections()
+                    collections = zot.all_collections()
                     for coll in collections[:10]:  # Show first 10
                         print(f"   - {coll['data']['name']} (ID: {coll['key']})")
                     if len(collections) > 10:

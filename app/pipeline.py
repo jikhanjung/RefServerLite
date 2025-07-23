@@ -504,8 +504,18 @@ async def process_pending_jobs():
             traceback.print_exc()
             await asyncio.sleep(10)  # Wait longer on error
 
+# Global flag to prevent multiple background processors
+_background_processor_started = False
+
 def start_background_processor():
     """Start the background job processor"""
+    global _background_processor_started
+    
+    if _background_processor_started:
+        logger.warning("Background processor already started, skipping")
+        print("⚠️ Background processor already started, skipping")
+        return
+    
     import asyncio
     import threading
     
@@ -517,4 +527,6 @@ def start_background_processor():
     # Start background processor in a separate thread to avoid blocking startup
     thread = threading.Thread(target=run_in_thread, daemon=True)
     thread.start()
+    _background_processor_started = True
     logger.info("Background processor thread started")
+    print("✅ Background processor thread started")

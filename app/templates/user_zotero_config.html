@@ -339,13 +339,45 @@ async function testConnection() {
     try {
         showNotification('Testing connection...', 'info');
         
-        const response = await fetchUserData('/api/v1/users/me/zotero/test', {
-            method: 'POST'
+        // Get values from the form
+        const userId = document.getElementById('userId').value;
+        const libraryType = document.getElementById('libraryType').value;
+        const libraryId = document.getElementById('libraryId').value;
+        const apiKey = document.getElementById('apiKey').value;
+        
+        // Validate required fields
+        if (!userId || !apiKey) {
+            showNotification('Please fill in User ID and API Key before testing connection', 'warning');
+            return;
+        }
+        
+        // Prepare test data
+        const testData = {
+            user_id: userId,
+            library_type: libraryType,
+            api_key: apiKey
+        };
+        
+        // Add library_id if it's a group library
+        if (libraryType === 'group' && libraryId) {
+            testData.library_id = libraryId;
+        }
+        
+        const response = await fetchUserData('/api/v1/users/me/zotero/test-config', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(testData)
         });
         
         if (response.success) {
             showNotification('Connection test successful!', 'success');
-            loadCurrentConfig();
+            // Show connection details
+            if (response.user_info) {
+                const details = `Connected as: ${response.user_info.displayName} (${response.user_info.username})`;
+                showNotification(details, 'info');
+            }
         } else {
             showNotification('Connection test failed: ' + response.message, 'danger');
         }

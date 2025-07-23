@@ -63,11 +63,19 @@
         <!-- Collections Sidebar -->
         <div class="col-md-3">
             <div class="user-card">
-                <div class="user-card-header">
+                <div class="user-card-header d-flex justify-content-between align-items-center">
                     <h6 class="mb-0">Collections</h6>
+                    <div class="btn-group btn-group-sm" role="group">
+                        <button type="button" class="btn btn-outline-secondary btn-sm" onclick="expandAllCollections()" title="Expand All">
+                            <i class="bi bi-arrows-expand" style="font-size: 0.8rem;"></i>
+                        </button>
+                        <button type="button" class="btn btn-outline-secondary btn-sm" onclick="collapseAllCollections()" title="Collapse All">
+                            <i class="bi bi-arrows-collapse" style="font-size: 0.8rem;"></i>
+                        </button>
+                    </div>
                 </div>
                 <div class="user-card-body p-0">
-                    <div id="collectionsTree">
+                    <div id="collectionsTree" style="text-align: left !important; display: block !important;">
                         <div class="text-center py-3">
                             <div class="spinner-border spinner-border-sm text-primary" role="status">
                                 <span class="visually-hidden">Loading...</span>
@@ -142,6 +150,8 @@ let currentItemSearch = '';
 let currentItemType = '';
 let currentItemPage = 1;
 const itemsPerPage = 20;
+let collapsedCollections = new Set(); // Track collapsed collections
+let allCollections = []; // Store all collections for default collapse
 
 document.addEventListener('DOMContentLoaded', function() {
     checkZoteroConnection();
@@ -223,6 +233,18 @@ async function loadCollections() {
         const response = await fetchUserData('/api/v1/users/me/zotero/collections');
         const collections = response.collections || [];
         
+        // Store collections and set default collapsed state (only on first load)
+        if (allCollections.length === 0) {
+            allCollections = collections;
+            // Set all collections with children to collapsed by default
+            collections.forEach(collection => {
+                const hasChildren = collections.some(c => c.parent_key === (collection.collection_key || collection.key));
+                if (hasChildren) {
+                    collapsedCollections.add(collection.collection_key || collection.key);
+                }
+            });
+        }
+        
         const collectionsHtml = buildCollectionsTree(collections);
         document.getElementById('collectionsTree').innerHTML = collectionsHtml;
         
@@ -284,27 +306,31 @@ function buildCollectionsTree(collections) {
     };
     sortCollections(rootCollections);
     
-    // Generate HTML
-    let html = `
-        <div class="collection-item ${!currentCollection ? 'active' : ''}" onclick="selectCollection('')">
-            <i class="bi bi-house me-2"></i>All Items
-        </div>
-    `;
+    // Generate HTML - 강력한 왼쪽 정렬 wrapper 적용
+    let html = `<div style="text-align: left !important; display: block !important; width: 100% !important;">
+        <div class="collection-item ${!currentCollection ? 'active' : ''}" onclick="selectCollection('')" style="text-align: left !important; justify-content: flex-start !important;">
+            <span onclick="selectCollection('')" style="cursor: pointer; flex: 1; display: flex; align-items: center; justify-content: flex-start !important;">
+                <i class="bi bi-house me-2"></i>All Items
+            </span>
+        </div>`;
     
     const renderCollection = (collection, level = 0) => {
-        const indent = level * 16; // 16px per level
+        const indent = level * 24; // 24px per level
         const hasChildren = collection.children && collection.children.length > 0;
-        const isExpanded = true; // Always expanded for now
+        const isExpanded = !collapsedCollections.has(collection.key);
         
         html += `
             <div class="collection-item ${currentCollection === collection.key ? 'active' : ''}" 
-                 style="padding-left: ${8 + indent}px;"
-                 onclick="selectCollection('${collection.key}')">
+                 style="padding-left: ${indent}px; text-align: left !important; justify-content: flex-start !important;">
                 ${hasChildren ? 
-                    `<i class="bi bi-chevron-${isExpanded ? 'down' : 'right'} me-1" style="font-size: 0.8rem;"></i>` : 
-                    '<span style="width: 12px; display: inline-block;"></span>'
+                    `<i class="bi bi-chevron-${isExpanded ? 'down' : 'right'} collection-toggle text-muted me-2" 
+                       style="font-size: 0.8rem; cursor: pointer; width: 16px; display: inline-block; text-align: center;" 
+                       onclick="event.stopPropagation(); toggleCollection('${collection.key}')"></i>` : 
+                    `<i class="bi bi-chevron-right me-2" style="font-size: 0.8rem; opacity: 0; pointer-events: none; width: 16px; display: inline-block; text-align: center;"></i>`
                 }
-                <i class="bi bi-folder${hasChildren ? '' : '-fill'} me-2"></i>${collection.name}
+                <span onclick="selectCollection('${collection.key}')" style="cursor: pointer; flex: 1; display: flex; align-items: center; justify-content: flex-start !important;">
+                    <i class="bi bi-folder me-2"></i>${collection.name}
+                </span>
                 <span class="badge bg-secondary ms-auto">${collection.numItems || 0}</span>
             </div>
         `;
@@ -315,6 +341,9 @@ function buildCollectionsTree(collections) {
     };
     
     rootCollections.forEach(collection => renderCollection(collection));
+    
+    // wrapper div 닫기
+    html += `</div>`;
     
     return html;
 }
@@ -410,6 +439,31 @@ function selectCollection(collectionKey) {
     loadItems();
 }
 
+function toggleCollection(collectionKey) {
+    if (collapsedCollections.has(collectionKey)) {
+        collapsedCollections.delete(collectionKey);
+    } else {
+        collapsedCollections.add(collectionKey);
+    }
+    loadCollections(); // Refresh to update tree display
+}
+
+function expandAllCollections() {
+    collapsedCollections.clear();
+    loadCollections();
+}
+
+function collapseAllCollections() {
+    // Add all collections with children to collapsed set
+    allCollections.forEach(collection => {
+        const hasChildren = allCollections.some(c => c.parent_key === (collection.collection_key || collection.key));
+        if (hasChildren) {
+            collapsedCollections.add(collection.collection_key || collection.key);
+        }
+    });
+    loadCollections();
+}
+
 function getItemTypeIcon(itemType) {
     const iconMap = {
         'book': 'bi-book',
@@ -492,8 +546,8 @@ function refreshItems() {
 }
 
 function viewItem(itemKey) {
-    // Show item details - could open a modal with full information
-    showNotification('Item details feature coming soon!', 'info');
+    // Navigate to item detail page
+    window.location.href = `/dashboard/zotero/item/${itemKey}`;
 }
 
 async function importItem(itemKey) {

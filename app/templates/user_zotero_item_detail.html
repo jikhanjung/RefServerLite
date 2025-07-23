@@ -1,0 +1,322 @@
+{% extends "base.html" %}
+
+{% block title %}{{ item_data.get('title', 'Untitled') }} - Zotero Item{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="row mb-4">
+        <div class="col-12">
+            <nav aria-label="breadcrumb">
+                <ol class="breadcrumb">
+                    <li class="breadcrumb-item"><a href="/dashboard">Dashboard</a></li>
+                    <li class="breadcrumb-item"><a href="/dashboard/zotero/library">Zotero Library</a></li>
+                    <li class="breadcrumb-item active" aria-current="page">Item Details</li>
+                </ol>
+            </nav>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-lg-8">
+            <!-- Item Details Card -->
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="bi bi-file-text me-2"></i>
+                        {{ item_data.get('title', 'Untitled') }}
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <!-- Item Type Badge -->
+                    <div class="mb-3">
+                        <span class="badge bg-secondary">{{ item.item_type }}</span>
+                        {% if item_data.get('itemType') == 'journalArticle' %}
+                            <span class="badge bg-info">Journal Article</span>
+                        {% elif item_data.get('itemType') == 'book' %}
+                            <span class="badge bg-primary">Book</span>
+                        {% elif item_data.get('itemType') == 'conferencePaper' %}
+                            <span class="badge bg-warning">Conference Paper</span>
+                        {% endif %}
+                    </div>
+
+                    <!-- Authors -->
+                    {% if item_data.get('creators') %}
+                    <div class="mb-3">
+                        <h6 class="text-muted">Authors</h6>
+                        <p class="mb-0">
+                            {% for creator in item_data.get('creators', []) %}
+                                {% if creator.get('creatorType') == 'author' %}
+                                    {{ creator.get('firstName', '') }} {{ creator.get('lastName', '') }}
+                                    {%- if not loop.last %}, {% endif %}
+                                {% endif %}
+                            {% endfor %}
+                        </p>
+                    </div>
+                    {% endif %}
+
+                    <!-- Publication Details -->
+                    <div class="row mb-3">
+                        {% if item_data.get('publicationTitle') %}
+                        <div class="col-md-6">
+                            <h6 class="text-muted">Publication</h6>
+                            <p class="mb-0">{{ item_data.get('publicationTitle') }}</p>
+                        </div>
+                        {% endif %}
+                        
+                        {% if item_data.get('date') %}
+                        <div class="col-md-3">
+                            <h6 class="text-muted">Date</h6>
+                            <p class="mb-0">{{ item_data.get('date') }}</p>
+                        </div>
+                        {% endif %}
+                        
+                        {% if item_data.get('volume') or item_data.get('issue') or item_data.get('pages') %}
+                        <div class="col-md-3">
+                            <h6 class="text-muted">Volume/Issue</h6>
+                            <p class="mb-0">
+                                {% if item_data.get('volume') %}Vol. {{ item_data.get('volume') }}{% endif %}
+                                {% if item_data.get('issue') %}({{ item_data.get('issue') }}){% endif %}
+                                {% if item_data.get('pages') %}, pp. {{ item_data.get('pages') }}{% endif %}
+                            </p>
+                        </div>
+                        {% endif %}
+                    </div>
+
+                    <!-- DOI -->
+                    {% if item_data.get('DOI') %}
+                    <div class="mb-3">
+                        <h6 class="text-muted">DOI</h6>
+                        <p class="mb-0">
+                            <a href="https://doi.org/{{ item_data.get('DOI') }}" target="_blank">
+                                {{ item_data.get('DOI') }}
+                                <i class="bi bi-box-arrow-up-right ms-1"></i>
+                            </a>
+                        </p>
+                    </div>
+                    {% endif %}
+
+                    <!-- URL -->
+                    {% if item_data.get('url') %}
+                    <div class="mb-3">
+                        <h6 class="text-muted">URL</h6>
+                        <p class="mb-0">
+                            <a href="{{ item_data.get('url') }}" target="_blank">
+                                {{ item_data.get('url')[:60] }}{% if item_data.get('url')|length > 60 %}...{% endif %}
+                                <i class="bi bi-box-arrow-up-right ms-1"></i>
+                            </a>
+                        </p>
+                    </div>
+                    {% endif %}
+
+                    <!-- Abstract -->
+                    {% if item_data.get('abstractNote') %}
+                    <div class="mb-3">
+                        <h6 class="text-muted">Abstract</h6>
+                        <p class="text-justify">{{ item_data.get('abstractNote') }}</p>
+                    </div>
+                    {% endif %}
+
+                    <!-- Tags -->
+                    {% if item_data.get('tags') %}
+                    <div class="mb-3">
+                        <h6 class="text-muted">Tags</h6>
+                        <div>
+                            {% for tag in item_data.get('tags', []) %}
+                                <span class="badge bg-light text-dark me-1">{{ tag.get('tag', '') }}</span>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endif %}
+
+                    <!-- Collections -->
+                    {% if collections %}
+                    <div class="mb-3">
+                        <h6 class="text-muted">Collections</h6>
+                        <div>
+                            {% for collection in collections %}
+                                <span class="badge bg-success me-1">{{ collection.name }}</span>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- RefServerLite PDF Card -->
+            {% if paper %}
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">
+                        <i class="bi bi-file-pdf me-2"></i>
+                        PDF Document in RefServerLite
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <p>This item has been imported to RefServerLite.</p>
+                    <div class="d-flex gap-2">
+                        <a href="/document/{{ paper.doc_id }}" class="btn btn-primary" target="_blank">
+                            <i class="bi bi-eye me-2"></i>View in RefServerLite
+                        </a>
+                        <a href="/api/v1/document/{{ paper.doc_id }}/download" class="btn btn-outline-secondary">
+                            <i class="bi bi-download me-2"></i>Download PDF
+                        </a>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+
+        <div class="col-lg-4">
+            <!-- Actions Card -->
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">Actions</h5>
+                </div>
+                <div class="card-body">
+                    {% if not paper %}
+                    <button class="btn btn-success w-100 mb-2" onclick="importItem('{{ item.zotero_key }}')">
+                        <i class="bi bi-cloud-download me-2"></i>Import PDF to RefServerLite
+                    </button>
+                    {% endif %}
+                    
+                    <button class="btn btn-outline-primary w-100 mb-2" onclick="syncItem('{{ item.zotero_key }}')">
+                        <i class="bi bi-arrow-repeat me-2"></i>Sync from Zotero
+                    </button>
+                    
+                    <a href="zotero://select/items/{{ item.library_id }}_{{ item.zotero_key }}" class="btn btn-outline-secondary w-100">
+                        <i class="bi bi-box-arrow-up-right me-2"></i>Open in Zotero
+                    </a>
+                </div>
+            </div>
+
+            <!-- Metadata Card -->
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0">Metadata</h5>
+                </div>
+                <div class="card-body">
+                    <dl class="row mb-0">
+                        <dt class="col-5">Item Key</dt>
+                        <dd class="col-7"><code>{{ item.zotero_key }}</code></dd>
+                        
+                        <dt class="col-5">Library ID</dt>
+                        <dd class="col-7"><code>{{ item.library_id }}</code></dd>
+                        
+                        <dt class="col-5">Version</dt>
+                        <dd class="col-7">{{ item.version }}</dd>
+                        
+                        {% if item.created_date %}
+                        <dt class="col-5">Created</dt>
+                        <dd class="col-7">
+                            {% if item.created_date is string %}
+                                {{ item.created_date[:10] }}
+                            {% else %}
+                                {{ item.created_date.strftime('%Y-%m-%d') }}
+                            {% endif %}
+                        </dd>
+                        {% endif %}
+                        
+                        {% if item.modified_date %}
+                        <dt class="col-5">Modified</dt>
+                        <dd class="col-7">
+                            {% if item.modified_date is string %}
+                                {{ item.modified_date[:10] }}
+                            {% else %}
+                                {{ item.modified_date.strftime('%Y-%m-%d') }}
+                            {% endif %}
+                        </dd>
+                        {% endif %}
+                        
+                        <dt class="col-5">Last Sync</dt>
+                        <dd class="col-7">
+                            {% if item.synced_at is string %}
+                                {{ item.synced_at[:19] }}
+                            {% else %}
+                                {{ item.synced_at.strftime('%Y-%m-%d %H:%M') }}
+                            {% endif %}
+                        </dd>
+                    </dl>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+async function importItem(itemKey) {
+    try {
+        showNotification('Importing item...', 'info');
+        
+        const response = await fetchUserData(`/api/v1/users/me/zotero/import/${itemKey}`, {
+            method: 'POST'
+        });
+        
+        if (response.imported_count > 0) {
+            showNotification(`Successfully imported ${response.imported_count} PDF(s)`, 'success');
+            setTimeout(() => location.reload(), 2000);
+        } else {
+            showNotification('No PDFs found to import', 'warning');
+        }
+    } catch (error) {
+        console.error('Error importing item:', error);
+        showNotification('Failed to import item', 'error');
+    }
+}
+
+async function syncItem(itemKey) {
+    try {
+        showNotification('Syncing item from Zotero...', 'info');
+        
+        const response = await fetchUserData(`/api/v1/users/me/zotero/sync_item/${itemKey}`, {
+            method: 'POST'
+        });
+        
+        showNotification('Item synced successfully', 'success');
+        setTimeout(() => location.reload(), 2000);
+    } catch (error) {
+        console.error('Error syncing item:', error);
+        showNotification('Failed to sync item', 'error');
+    }
+}
+
+function showNotification(message, type = 'info') {
+    const alertClass = {
+        'info': 'alert-info',
+        'success': 'alert-success',
+        'warning': 'alert-warning',
+        'error': 'alert-danger'
+    }[type] || 'alert-info';
+    
+    const notification = document.createElement('div');
+    notification.className = `alert ${alertClass} alert-dismissible fade show position-fixed top-0 start-50 translate-middle-x mt-3`;
+    notification.style.zIndex = '9999';
+    notification.innerHTML = `
+        ${message}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    `;
+    
+    document.body.appendChild(notification);
+    
+    setTimeout(() => {
+        notification.remove();
+    }, 5000);
+}
+
+async function fetchUserData(url, options = {}) {
+    const response = await fetch(url, {
+        ...options,
+        headers: {
+            ...options.headers,
+            'X-Requested-With': 'XMLHttpRequest'
+        }
+    });
+    
+    if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Request failed');
+    }
+    
+    return response.json();
+}
+</script>
+{% endblock %}

@@ -48,20 +48,20 @@ class EmbeddingGenerator:
             logger.error(f"Failed to initialize embedding model: {str(e)}")
             raise
     
-    def generate_embedding(self, text: str, max_length: Optional[int] = None) -> np.ndarray:
+    def generate_embedding(self, text: str, max_length: Optional[int] = None, context: str = "") -> np.ndarray:
         """Generate embedding for a single text"""
         if not text or not text.strip():
             # Return zero vector for empty text
             return np.zeros(self.embedding_dim)
         
-        # Truncate text if needed (be more aggressive)
-        if max_length:
+        # Truncate text if needed
+        if max_length is not None:
             text = text[:max_length]
-        else:
-            text = text[:2000]  # Default max length
+        # If max_length is None, don't truncate (for page-level embeddings)
         
         try:
-            logger.info(f"Generating embedding for text of length: {len(text)}")
+            context_str = f" ({context})" if context else ""
+            logger.info(f"Generating embedding{context_str} for text of length: {len(text)}")
             
             # Generate embedding
             embedding = self.model.encode(
@@ -71,10 +71,10 @@ class EmbeddingGenerator:
                 normalize_embeddings=True  # Normalize for cosine similarity
             )
             
-            logger.info("Successfully generated embedding")
+            logger.info(f"Successfully generated embedding{context_str}")
             return embedding
         except Exception as e:
-            logger.error(f"Failed to generate embedding: {str(e)}")
+            logger.error(f"Failed to generate embedding{context_str}: {str(e)}")
             raise
     
     def generate_embeddings_batch(self, texts: List[str], batch_size: int = 32) -> List[np.ndarray]:
@@ -145,7 +145,7 @@ class EmbeddingGenerator:
         
         # For short texts, just encode directly
         if len(text) < 2000:
-            return self.generate_embedding(text)
+            return self.generate_embedding(text, context="document")
         
         # For longer texts, chunk and combine
         chunks = self.chunk_text(text, chunk_size=1000, overlap=200)
@@ -204,8 +204,8 @@ class EmbeddingGenerator:
                 
             print(f"🔍 Generating embedding for page {page_num} ({len(page_text)} chars)")
             
-            # Generate embedding for this page
-            page_embedding = self.generate_embedding(page_text)
+            # Generate embedding for this page (don't truncate page text)
+            page_embedding = self.generate_embedding(page_text, max_length=None, context=f"page {page_num}")
             
             valid_pages.append((page_num, page_embedding))
             page_embeddings.append(page_embedding)
