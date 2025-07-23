@@ -133,7 +133,7 @@ def get_embedding_from_chroma(collection, doc_id: str, page_number: int = None, 
             where=where_clause
         )
         
-        if result['embeddings'] and len(result['embeddings']) > 0:
+        if result['embeddings'] is not None and len(result['embeddings']) > 0:
             return result['embeddings'][0]
         else:
             return None

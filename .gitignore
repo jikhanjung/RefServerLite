@@ -110,11 +110,24 @@ data/
 refdata/
 !refdata/.gitkeep
 
+# Database files
+*.db
+*.db-shm
+*.db-wal
+refserver.db*
+
+# Security and encryption
+encryption.key
+
 # ChromaDB
 chromadb/
 
-# Uploaded PDFs
+# Uploaded PDFs and previews
 *.pdf
+previews/
+*.png
+*.jpg
+*.jpeg
 
 # OS
 .DS_Store
@@ -141,8 +154,13 @@ models/
 .cache/
 huggingface/
 
-# Zotero cache
+# Zotero cache and reports
 scripts/zotero_cache/
+scripts/import_report_*.json
+scripts/zotero_import_progress.json
+
+# Zotero configuration
+scripts/config.yml
 
 # Playwright
 node_modules/

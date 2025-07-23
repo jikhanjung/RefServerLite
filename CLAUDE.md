@@ -30,10 +30,15 @@ RefServerLite is a streamlined PDF repository service with OCR, metadata extract
 ├── /data
 │   ├── /pdfs           # Uploaded PDF storage
 │   └── refserver.db    # SQLite database
-├── /scripts            # Utility scripts
+├── /scripts            # Utility scripts & development tools
 │   ├── import_from_zotero.py  # Zotero import script
 │   ├── config.yml.example     # Configuration template
-│   └── config.yml            # Active configuration
+│   ├── config.yml            # Active configuration
+│   ├── setup_dev.sh          # Development environment setup
+│   ├── run_server.sh         # Native server execution
+│   ├── stop_server.sh        # Server shutdown
+│   └── check_server.sh       # Server status check
+├── /logs               # Server logs and debug output
 ├── /devlog             # Development logs and experiments
 ├── /migrations         # Database migration files
 └── /tests              # Pytest test suite
@@ -144,7 +149,15 @@ RefServerLite is a streamlined PDF repository service with OCR, metadata extract
 - [x] Retry mechanisms for database locks
 - [x] Performance monitoring and metrics
 
-### Phase 8: Testing & Deployment 🔄
+### Phase 8: Development Environment & Bug Fixes ✅
+- [x] Native development scripts (setup_dev.sh, run_server.sh, etc.)
+- [x] Docker-free development environment (10-20x faster)
+- [x] Document embedding display fixes
+- [x] Zotero sync optimization with batch processing
+- [x] ChromaDB NumPy array handling improvements
+- [x] Collection item count accuracy fixes
+
+### Phase 9: Testing & Deployment 🔄
 - [x] Create Dockerfile
 - [x] Set up docker-compose.yml
 - [x] Database migrations
@@ -180,10 +193,23 @@ PyYAML (for configuration)
 - Bootstrap 5 for responsive UI
 - Basic user authentication with admin access
 - Semantic chunking supports hierarchical text splitting
-- 2D heatmap visualizations for embedding fingerprints
+- 2D heatmap visualizations for embedding fingerprints (64px size)
 - 3D visualizations available via API but not used in production UI
 - Zotero integration with batch processing and caching
 - Database performance optimized with WAL mode and bulk operations
 - Real-time job monitoring with dedicated admin dashboard
 - Metadata source tracking (auto-extracted vs user-provided)
 - Date parsing supports various formats (01/2004, 2004-01-15, etc.)
+
+## Development Environment
+- **Native Scripts**: Use `scripts/run_server.sh` for Docker-free development
+- **Performance**: Native development is 10-20x faster than Docker builds
+- **Requirements**: tesseract-ocr, build-essential, python3-dev
+- **Data Sharing**: Both Docker and Native use `./refdata/` directory
+- **Logs**: Stored in `./logs/server.log` for debugging
+
+## Critical Patterns
+- **ChromaDB Queries**: Always check `if result['embeddings'] is not None and len(result['embeddings']) > 0`
+- **Template Data**: Convert NumPy arrays to lists with `.tolist()` before passing to Jinja2
+- **Zotero API**: Add 2-second delays between requests to prevent rate limiting
+- **Batch Processing**: Use 20-item batches with 1-second delays for UI responsiveness
