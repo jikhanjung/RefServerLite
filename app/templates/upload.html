@@ -1,14 +1,22 @@
-{% extends "base.html" %}
+{% extends "user_base.html" %}
 
 {% block title %}Upload PDF - RefServerLite{% endblock %}
 
+{% block breadcrumb %}
+<li class="breadcrumb-item active">Upload PDF</li>
+{% endblock %}
+
 {% block content %}
+<div class="page-title">
+    <h1>Upload PDF Document</h1>
+    <p class="page-subtitle">Upload and process your PDF documents</p>
+</div>
+
 <div class="row">
     <div class="col-md-8 mx-auto">
-        <h1 class="mb-4">Upload PDF Document</h1>
         
-        <div class="card">
-            <div class="card-body">
+        <div class="user-card">
+            <div class="user-card-body">
                 <form id="uploadForm" enctype="multipart/form-data">
                     <div class="mb-3">
                         <label for="pdfFile" class="form-label">Select PDF File</label>
@@ -26,9 +34,9 @@
             </div>
         </div>
         
-        <div class="card mt-4" id="jobStatus" style="display: none;">
-            <div class="card-body">
-                <h5 class="card-title">Processing Status</h5>
+        <div class="user-card mt-4" id="jobStatus" style="display: none;">
+            <div class="user-card-body">
+                <h5 class="user-card-title">Processing Status</h5>
                 <div class="mb-3">
                     <div class="d-flex justify-content-between mb-1">
                         <span>Progress</span>
@@ -80,15 +88,27 @@ document.getElementById('uploadForm').addEventListener('submit', async (e) => {
         const data = await response.json();
         
         if (response.ok) {
-            uploadResult.innerHTML = `
-                <div class="alert alert-success">
-                    ${data.message}
-                </div>
-            `;
-            
-            // Show job status and start polling
-            jobStatus.style.display = 'block';
-            pollJobStatus(data.job_id);
+            if (data.existing) {
+                // File already exists, show message with link to existing document
+                uploadResult.innerHTML = `
+                    <div class="alert alert-info">
+                        <strong>Duplicate file detected!</strong><br>
+                        ${data.message}<br>
+                        <a href="/document/${data.doc_id}" class="alert-link">View existing document</a>
+                    </div>
+                `;
+            } else {
+                // New file uploaded
+                uploadResult.innerHTML = `
+                    <div class="alert alert-success">
+                        ${data.message}
+                    </div>
+                `;
+                
+                // Show job status and start polling
+                jobStatus.style.display = 'block';
+                pollJobStatus(data.job_id);
+            }
         } else {
             uploadResult.innerHTML = `
                 <div class="alert alert-danger">

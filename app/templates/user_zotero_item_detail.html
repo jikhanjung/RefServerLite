@@ -1,32 +1,30 @@
-{% extends "base.html" %}
+{% extends "user_base.html" %}
 
 {% block title %}{{ item_data.get('title', 'Untitled') }} - Zotero Item{% endblock %}
 
+{% block breadcrumb %}
+<li class="breadcrumb-item">Zotero Integration</li>
+<li class="breadcrumb-item"><a href="/dashboard/zotero/library">My Library</a></li>
+<li class="breadcrumb-item active">Item Details</li>
+{% endblock %}
+
 {% block content %}
-<div class="container-fluid">
-    <div class="row mb-4">
-        <div class="col-12">
-            <nav aria-label="breadcrumb">
-                <ol class="breadcrumb">
-                    <li class="breadcrumb-item"><a href="/dashboard">Dashboard</a></li>
-                    <li class="breadcrumb-item"><a href="/dashboard/zotero/library">Zotero Library</a></li>
-                    <li class="breadcrumb-item active" aria-current="page">Item Details</li>
-                </ol>
-            </nav>
-        </div>
-    </div>
+<div class="page-title">
+    <h1>{{ item_data.get('title', 'Untitled') }}</h1>
+    <p class="page-subtitle">Zotero Item Details</p>
+</div>
 
     <div class="row">
         <div class="col-lg-8">
             <!-- Item Details Card -->
-            <div class="card mb-4">
-                <div class="card-header">
+            <div class="user-card mb-4">
+                <div class="user-card-header">
                     <h5 class="mb-0">
                         <i class="bi bi-file-text me-2"></i>
                         {{ item_data.get('title', 'Untitled') }}
                     </h5>
                 </div>
-                <div class="card-body">
+                <div class="user-card-body">
                     <!-- Item Type Badge -->
                     <div class="mb-3">
                         <span class="badge bg-secondary">{{ item.item_type }}</span>
@@ -144,14 +142,14 @@
 
             <!-- RefServerLite PDF Card -->
             {% if paper %}
-            <div class="card mb-4">
-                <div class="card-header">
+            <div class="user-card mb-4">
+                <div class="user-card-header">
                     <h5 class="mb-0">
                         <i class="bi bi-file-pdf me-2"></i>
                         PDF Document in RefServerLite
                     </h5>
                 </div>
-                <div class="card-body">
+                <div class="user-card-body">
                     <p>This item has been imported to RefServerLite.</p>
                     <div class="d-flex gap-2">
                         <a href="/document/{{ paper.doc_id }}" class="btn btn-primary" target="_blank">
@@ -164,15 +162,62 @@
                 </div>
             </div>
             {% endif %}
+            
+            <!-- Attachments Card -->
+            {% if attachments %}
+            <div class="user-card mb-4">
+                <div class="user-card-header">
+                    <h5 class="mb-0">
+                        <i class="bi bi-paperclip me-2"></i>
+                        Attachments ({{ attachments|length }})
+                    </h5>
+                </div>
+                <div class="card-body p-0">
+                    <div class="list-group list-group-flush">
+                        {% for attachment in attachments %}
+                        <div class="list-group-item">
+                            <div class="d-flex justify-content-between align-items-start">
+                                <div class="flex-grow-1">
+                                    <h6 class="mb-1">
+                                        {% if attachment.content_type == 'application/pdf' %}
+                                            <i class="bi bi-file-pdf text-danger me-2"></i>
+                                        {% else %}
+                                            <i class="bi bi-file-earmark me-2"></i>
+                                        {% endif %}
+                                        {{ attachment.filename or attachment.title }}
+                                    </h6>
+                                    <p class="mb-1 text-muted small">{{ attachment.content_type }}</p>
+                                    {% if attachment.paper %}
+                                        <span class="badge bg-primary">Imported to RefServerLite</span>
+                                    {% endif %}
+                                </div>
+                                <div class="flex-shrink-0">
+                                    {% if attachment.paper %}
+                                        <a href="/document/{{ attachment.paper.doc_id }}" class="btn btn-sm btn-outline-primary" target="_blank">
+                                            <i class="bi bi-eye"></i>
+                                        </a>
+                                    {% elif attachment.content_type == 'application/pdf' %}
+                                        <button class="btn btn-sm btn-success" onclick="importAttachment('{{ attachment.key }}')">
+                                            <i class="bi bi-download"></i> Import
+                                        </button>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+            {% endif %}
         </div>
 
         <div class="col-lg-4">
             <!-- Actions Card -->
-            <div class="card mb-4">
-                <div class="card-header">
+            <div class="user-card mb-4">
+                <div class="user-card-header">
                     <h5 class="mb-0">Actions</h5>
                 </div>
-                <div class="card-body">
+                <div class="user-card-body">
                     {% if not paper %}
                     <button class="btn btn-success w-100 mb-2" onclick="importItem('{{ item.zotero_key }}')">
                         <i class="bi bi-cloud-download me-2"></i>Import PDF to RefServerLite
@@ -190,11 +235,11 @@
             </div>
 
             <!-- Metadata Card -->
-            <div class="card">
-                <div class="card-header">
+            <div class="user-card">
+                <div class="user-card-header">
                     <h5 class="mb-0">Metadata</h5>
                 </div>
-                <div class="card-body">
+                <div class="user-card-body">
                     <dl class="row mb-0">
                         <dt class="col-5">Item Key</dt>
                         <dd class="col-7"><code>{{ item.zotero_key }}</code></dd>
@@ -240,7 +285,6 @@
             </div>
         </div>
     </div>
-</div>
 
 <script>
 async function importItem(itemKey) {
@@ -260,6 +304,26 @@ async function importItem(itemKey) {
     } catch (error) {
         console.error('Error importing item:', error);
         showNotification('Failed to import item', 'error');
+    }
+}
+
+async function importAttachment(attachmentKey) {
+    try {
+        showNotification('Importing attachment...', 'info');
+        
+        const response = await fetchUserData(`/api/v1/users/me/zotero/import/${attachmentKey}`, {
+            method: 'POST'
+        });
+        
+        if (response.imported_count > 0) {
+            showNotification('Attachment imported successfully', 'success');
+            setTimeout(() => location.reload(), 2000);
+        } else {
+            showNotification('Failed to import attachment', 'warning');
+        }
+    } catch (error) {
+        console.error('Error importing attachment:', error);
+        showNotification('Failed to import attachment', 'error');
     }
 }
 
@@ -319,4 +383,7 @@ async function fetchUserData(url, options = {}) {
     return response.json();
 }
 </script>
+{% endblock %}
+
+{% block scripts %}
 {% endblock %}

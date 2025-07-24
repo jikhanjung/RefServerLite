@@ -1,31 +1,53 @@
 // User Dashboard JavaScript
 
-// Sidebar toggle for mobile
+// Sidebar toggle functionality
 document.addEventListener('DOMContentLoaded', function() {
     const sidebarToggle = document.getElementById('sidebarToggle');
+    const sidebarToggleMobile = document.getElementById('sidebarToggleMobile');
     const sidebar = document.getElementById('sidebar');
+    const mainContent = document.querySelector('.main-content');
     
+    // Desktop sidebar toggle
     if (sidebarToggle && sidebar) {
         sidebarToggle.addEventListener('click', function() {
-            sidebar.classList.toggle('show');
-        });
-        
-        // Close sidebar when clicking outside on mobile
-        document.addEventListener('click', function(event) {
-            if (window.innerWidth < 768) {
-                if (!sidebar.contains(event.target) && !sidebarToggle.contains(event.target)) {
-                    sidebar.classList.remove('show');
-                }
+            sidebar.classList.toggle('collapsed');
+            if (mainContent) {
+                mainContent.classList.toggle('sidebar-collapsed');
             }
-        });
-        
-        // Handle window resize
-        window.addEventListener('resize', function() {
-            if (window.innerWidth >= 768) {
-                sidebar.classList.remove('show');
-            }
+            // Save state to localStorage
+            localStorage.setItem('userSidebarCollapsed', sidebar.classList.contains('collapsed'));
         });
     }
+    
+    // Mobile sidebar toggle
+    if (sidebarToggleMobile && sidebar) {
+        sidebarToggleMobile.addEventListener('click', function() {
+            sidebar.classList.toggle('show');
+        });
+    }
+    
+    // Restore sidebar state from localStorage
+    const sidebarCollapsed = localStorage.getItem('userSidebarCollapsed') === 'true';
+    if (sidebarCollapsed && sidebar && mainContent) {
+        sidebar.classList.add('collapsed');
+        mainContent.classList.add('sidebar-collapsed');
+    }
+    
+    // Close sidebar when clicking outside on mobile
+    document.addEventListener('click', function(event) {
+        if (window.innerWidth < 768) {
+            if (!sidebar.contains(event.target) && !sidebarToggleMobile.contains(event.target)) {
+                sidebar.classList.remove('show');
+            }
+        }
+    });
+    
+    // Handle window resize
+    window.addEventListener('resize', function() {
+        if (window.innerWidth >= 768) {
+            sidebar.classList.remove('show');
+        }
+    });
 });
 
 // Utility functions for API calls

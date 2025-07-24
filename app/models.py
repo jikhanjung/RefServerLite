@@ -122,6 +122,9 @@ class Paper(BaseModel):
     created_at = DateTimeField(default=datetime.datetime.now)
     updated_at = DateTimeField(default=datetime.datetime.now)
     
+    # File deduplication
+    md5_hash = CharField(null=True, index=True)  # MD5 hash of PDF file for deduplication
+    
     # Duplicate detection fields
     duplicate_check_completed = BooleanField(default=False)
     duplicate_checked_at = DateTimeField(null=True)

@@ -16,8 +16,11 @@
                 <i class="bi bi-file-earmark-pdf me-2"></i>RefServerLite
             </a>
             
-            <!-- Mobile menu toggle -->
-            <button class="navbar-toggler d-lg-none" type="button" id="sidebarToggle">
+            <!-- Sidebar toggle buttons -->
+            <button class="btn btn-outline-light d-none d-md-block me-2" type="button" id="sidebarToggle" title="Toggle Sidebar">
+                <i class="bi bi-list"></i>
+            </button>
+            <button class="navbar-toggler d-md-none" type="button" id="sidebarToggleMobile">
                 <span class="navbar-toggler-icon"></span>
             </button>
             
@@ -57,18 +60,18 @@
                         <li class="nav-item">
                             <a class="nav-link {% if active_page == 'dashboard' %}active{% endif %}" 
                                href="/dashboard">
-                                <i class="bi bi-house-door"></i> Dashboard
+                                <i class="bi bi-house-door"></i> <span>Dashboard</span>
                             </a>
                         </li>
                         <li class="nav-item">
                             <a class="nav-link {% if active_page == 'my-papers' %}active{% endif %}" 
                                href="/dashboard/my-papers">
-                                <i class="bi bi-file-earmark-pdf"></i> My Papers
+                                <i class="bi bi-file-earmark-pdf"></i> <span>My Papers</span>
                             </a>
                         </li>
                         <li class="nav-item">
-                            <a class="nav-link" href="/">
-                                <i class="bi bi-upload"></i> Upload PDF
+                            <a class="nav-link {% if active_page == 'upload' %}active{% endif %}" href="/upload">
+                                <i class="bi bi-upload"></i> <span>Upload PDF</span>
                             </a>
                         </li>
                     </ul>
@@ -80,13 +83,13 @@
                         <li class="nav-item">
                             <a class="nav-link {% if active_page == 'zotero-library' %}active{% endif %}" 
                                href="/dashboard/zotero/library">
-                                <i class="bi bi-collection"></i> My Library
+                                <i class="bi bi-collection"></i> <span>My Library</span>
                             </a>
                         </li>
                         <li class="nav-item">
                             <a class="nav-link {% if active_page == 'zotero-config' %}active{% endif %}" 
                                href="/dashboard/zotero/config">
-                                <i class="bi bi-gear"></i> Settings
+                                <i class="bi bi-gear"></i> <span>Settings</span>
                             </a>
                         </li>
                     </ul>

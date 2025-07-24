@@ -394,8 +394,11 @@ function displayItems(items) {
                     ${item.abstractNote ? `<p class="text-muted small mb-2">${truncateText(item.abstractNote, 150)}</p>` : ''}
                     <div class="d-flex align-items-center">
                         <span class="badge bg-light text-dark me-2">${getItemTypeLabel(item.itemType)}</span>
-                        ${item.attachments && item.attachments.length > 0 ? 
-                          `<span class="badge bg-success me-2">${item.attachments.length} attachment(s)</span>` : ''}
+                        ${item.has_pdf ? 
+                          `<span class="badge bg-primary me-2" title="PDF imported to RefServerLite"><i class="bi bi-check-circle-fill"></i> PDF in Library</span>` : ''}
+                        ${item.has_zotero_attachment ? 
+                          `<span class="badge bg-success me-2" title="${item.attachment_count} PDF attachment(s) in Zotero"><i class="bi bi-paperclip"></i> ${item.attachment_count} PDF${item.attachment_count > 1 ? 's' : ''}</span>` : 
+                          `<span class="badge bg-secondary me-2" title="No PDF attachments in Zotero"><i class="bi bi-x-circle"></i> No PDF</span>`}
                     </div>
                 </div>
                 <div class="flex-shrink-0 ms-3">
@@ -410,10 +413,17 @@ function displayItems(items) {
                                     <i class="bi bi-eye me-2"></i>View Details
                                 </a>
                             </li>
-                            ${item.attachments && item.attachments.length > 0 ? `
+                            ${item.has_zotero_attachment && !item.has_pdf ? `
                             <li>
                                 <a class="dropdown-item" href="#" onclick="importItem('${item.key}')">
                                     <i class="bi bi-download me-2"></i>Import PDF
+                                </a>
+                            </li>
+                            ` : ''}
+                            ${item.has_pdf ? `
+                            <li>
+                                <a class="dropdown-item" href="/document/${item.paper_id}">
+                                    <i class="bi bi-file-earmark-pdf me-2"></i>View PDF
                                 </a>
                             </li>
                             ` : ''}

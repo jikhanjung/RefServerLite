@@ -1,85 +1,8 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ paper.filename }} - RefServerLite</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css" rel="stylesheet">
-    <link href="/static/css/admin.css" rel="stylesheet">
-</head>
-<body>
-    <div class="admin-layout">
-        <!-- Sidebar -->
-        <nav class="sidebar" id="sidebar">
-            <div class="sidebar-header">
-                <h4><i class="bi bi-server"></i> RefServerLite</h4>
-                <button class="btn btn-sm btn-outline-light sidebar-toggle d-md-none" id="sidebarToggle">
-                    <i class="bi bi-list"></i>
-                </button>
-            </div>
-            
-            <div class="sidebar-menu">
-                <!-- Dashboard -->
-                <div class="nav-section">
-                    {% if current_user and current_user.is_admin %}
-                    <a href="/admin" class="nav-link">
-                        <i class="bi bi-speedometer2"></i>
-                        <span>Admin Dashboard</span>
-                    </a>
-                    {% else %}
-                    <a href="/dashboard" class="nav-link">
-                        <i class="bi bi-house"></i>
-                        <span>Dashboard</span>
-                    </a>
-                    {% endif %}
-                </div>
-                
-                <!-- Documents -->
-                <div class="nav-section">
-                    <div class="nav-header">
-                        <i class="bi bi-file-earmark-text"></i>
-                        <span>Documents</span>
-                    </div>
-                    {% if current_user and current_user.is_admin %}
-                    <a href="/admin/papers" class="nav-link">
-                        <i class="bi bi-files"></i>
-                        <span>All Papers</span>
-                    </a>
-                    {% else %}
-                    <a href="/dashboard" class="nav-link">
-                        <i class="bi bi-files"></i>
-                        <span>My Papers</span>
-                    </a>
-                    {% endif %}
-                </div>
-                
-                <!-- Upload -->
-                <div class="nav-section">
-                    <a href="/upload" class="nav-link">
-                        <i class="bi bi-upload"></i>
-                        <span>Upload PDF</span>
-                    </a>
-                </div>
-                
-                <!-- Zotero (if user has zotero config) -->
-                {% if current_user and current_user.zotero_library_id %}
-                <div class="nav-section">
-                    <div class="nav-header">
-                        <i class="bi bi-cloud-arrow-down"></i>
-                        <span>Zotero</span>
-                    </div>
-                    <a href="/user/zotero/library" class="nav-link">
-                        <i class="bi bi-collection"></i>
-                        <span>My Library</span>
-                    </a>
-                </div>
-                {% endif %}
-            </div>
-        </nav>
-        
-        <!-- Main Content -->
-        <div class="main-content">
+{% extends "admin_base.html" %}
+
+{% block title %}{{ paper.filename }} - RefServerLite{% endblock %}
+
+{% block content %}
             <!-- Top Bar -->
             <header class="topbar">
                 <div class="d-flex justify-content-between align-items-center">
@@ -1191,14 +1114,4 @@ function toggleChunkText(chunkId) {
 </script>
                     </div>
                 </div>
-            </main>
-        </div>
-    </div>
-    
-    <!-- Overlay for mobile sidebar -->
-    <div class="sidebar-overlay d-md-none" id="sidebarOverlay"></div>
-    
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="/static/js/admin.js"></script>
-</body>
-</html>
+{% endblock %}

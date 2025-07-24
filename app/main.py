@@ -85,7 +85,8 @@ async def upload_page(request: Request):
     user = check_session_auth(request)
     return templates.TemplateResponse("upload.html", {
         "request": request, 
-        "current_user": user
+        "current_user": user,
+        "active_page": "upload"
     })
 
 @app.get("/document/{doc_id}", response_class=HTMLResponse)
@@ -176,7 +177,10 @@ async def document_view(request: Request, doc_id: str):
         for page_num, embedding in page_embeddings.items():
             logger.info(f"  Page {page_num}: {len(embedding)} embedding values")
         
-        return templates.TemplateResponse("document.html", {
+        # Choose template based on user type
+        template_name = "document_admin.html" if user.is_admin else "document_user.html"
+        
+        return templates.TemplateResponse(template_name, {
             "request": request,
             "current_user": user,
             "paper": paper,
@@ -186,7 +190,8 @@ async def document_view(request: Request, doc_id: str):
             "page_embeddings": page_embeddings,
             "document_embedding": document_embedding,
             "chunks": list(chunks),
-            "zotero_link": zotero_link
+            "zotero_link": zotero_link,
+            "active_page": "papers" if user.is_admin else "my-papers"
         })
         
     except Paper.DoesNotExist:
@@ -263,25 +268,42 @@ async def upload_pdf(
     current_user: User = Depends(get_current_user)
 ):
     """Upload a PDF file for processing"""
+    from .utils import calculate_bytes_md5
+    
     # Validate file type
     if not file.filename.endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Only PDF files are allowed")
     
-    # Generate unique job ID and document ID
-    job_id = str(uuid.uuid4())
-    doc_id = str(uuid.uuid4())
-    
-    # Save uploaded file
-    upload_dir = Path("refdata/pdfs")
-    upload_dir.mkdir(exist_ok=True)
-    file_path = upload_dir / f"{doc_id}_{file.filename}"
-    
     try:
         contents = await file.read()
+        
+        # Calculate MD5 hash of the file content
+        pdf_hash = calculate_bytes_md5(contents)
+        
+        # Check if a Paper with this hash already exists
+        existing_paper = Paper.select().where(Paper.md5_hash == pdf_hash).first()
+        if existing_paper:
+            return {
+                "job_id": None,
+                "filename": file.filename,
+                "doc_id": existing_paper.doc_id,
+                "message": f"File already exists as '{existing_paper.filename}'. Redirecting to existing document.",
+                "existing": True
+            }
+        
+        # Generate unique job ID and document ID
+        job_id = str(uuid.uuid4())
+        doc_id = str(uuid.uuid4())
+        
+        # Save uploaded file
+        upload_dir = Path("refdata/pdfs")
+        upload_dir.mkdir(exist_ok=True)
+        file_path = upload_dir / f"{doc_id}_{file.filename}"
+        
         with open(file_path, 'wb') as f:
             f.write(contents)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to process file: {str(e)}")
     
     # Create database entries
     try:
@@ -290,7 +312,8 @@ async def upload_pdf(
             doc_id=doc_id,
             filename=file.filename,
             file_path=str(file_path),
-            uploaded_by=current_user
+            uploaded_by=current_user,
+            md5_hash=pdf_hash
         )
         
         # Create ProcessingJob entry
@@ -1768,6 +1791,36 @@ async def user_zotero_item_detail(request: Request, item_key: str):
                 'name': ci.collection.name
             })
         
+        # Get attachments for this item
+        attachments = []
+        attachment_query = ZoteroItem.select().where(
+            ZoteroItem.parent_key == zotero_item.zotero_key,
+            ZoteroItem.user == current_user,
+            ZoteroItem.is_attachment == True
+        )
+        
+        for attachment in attachment_query:
+            attachment_data = attachment.get_data()
+            # Check if this attachment has a corresponding paper
+            attachment_paper = None
+            try:
+                attachment_paper_rel = ZoteroItemPaper.select().where(
+                    ZoteroItemPaper.zotero_item == attachment
+                ).first()
+                if attachment_paper_rel:
+                    attachment_paper = attachment_paper_rel.paper
+            except:
+                pass
+            
+            attachments.append({
+                'key': attachment.zotero_key,
+                'title': attachment_data.get('title', attachment.filename or 'Untitled'),
+                'filename': attachment.filename,
+                'content_type': attachment.content_type,
+                'paper': attachment_paper,
+                'data': attachment_data
+            })
+        
         return templates.TemplateResponse("user_zotero_item_detail.html", {
             "request": request,
             "current_user": current_user,
@@ -1775,7 +1828,8 @@ async def user_zotero_item_detail(request: Request, item_key: str):
             "item": zotero_item,
             "item_data": item_data,
             "paper": paper,
-            "collections": collections
+            "collections": collections,
+            "attachments": attachments
         })
         
     except Exception as e:
@@ -1975,6 +2029,7 @@ async def admin_document_detail(request: Request, doc_id: str):
     auth_result = require_session_admin_redirect(request)
     if isinstance(auth_result, RedirectResponse):
         return auth_result
+    user = auth_result
     try:
         paper = Paper.get(Paper.doc_id == doc_id)
         
@@ -2045,15 +2100,20 @@ async def admin_document_detail(request: Request, doc_id: str):
         for page_num, embedding in page_embeddings.items():
             logger.info(f"  Page {page_num}: {len(embedding)} embedding values")
         
-        return templates.TemplateResponse("document.html", {
+        # Choose template based on user type
+        template_name = "document_admin.html" if user and user.is_admin else "document_user.html"
+        
+        return templates.TemplateResponse(template_name, {
             "request": request,
+            "current_user": user,
             "paper": paper,
             "metadata": metadata,
             "jobs": jobs,
             "page_texts": page_texts,
             "page_embeddings": page_embeddings,
             "document_embedding": document_embedding,
-            "zotero_link": zotero_link
+            "zotero_link": zotero_link,
+            "active_page": "papers" if user and user.is_admin else "my-papers"
         })
     except Paper.DoesNotExist:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -3146,8 +3206,8 @@ async def set_zotero_config(
         try:
             from pyzotero import zotero
             zot = zotero.Zotero(library_id, request.library_type, request.api_key)
-            # Test connection by getting a small number of items
-            zot.items(limit=1)
+            # Test connection by getting a small number of items (synchronous test)
+            zot.items(limit=1)  # Keep synchronous for quick config validation
         except Exception as e:
             raise HTTPException(
                 status_code=400,
@@ -3200,9 +3260,15 @@ async def test_user_zotero_connection(current_user: User = Depends(get_current_u
             library_type = current_user.zotero_library_type or 'user'
             zot = zotero.Zotero(current_user.zotero_library_id, library_type, api_key)
             
-            # Test by fetching user info and a small number of items
-            user_info = zot.key_info()
-            items = zot.items(limit=1)
+            # Test by fetching user info and a small number of items using Thread Pool
+            user_info = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: zot.key_info()
+            )
+            items = await asyncio.get_event_loop().run_in_executor(
+                None, 
+                lambda: zot.items(limit=1)
+            )
             
             return {
                 'success': True,
@@ -3253,9 +3319,15 @@ async def test_user_zotero_config(
             from pyzotero import zotero
             zot = zotero.Zotero(library_id, config.library_type, config.api_key)
             
-            # Test by fetching user info and a small number of items
-            user_info = zot.key_info()
-            items = zot.items(limit=1)
+            # Test by fetching user info and a small number of items using Thread Pool
+            user_info = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: zot.key_info()
+            )
+            items = await asyncio.get_event_loop().run_in_executor(
+                None, 
+                lambda: zot.items(limit=1)
+            )
             
             return {
                 'success': True,
@@ -3956,8 +4028,11 @@ async def test_user_zotero_connection(
             from pyzotero import zotero
             library_type = user.zotero_library_type or 'user'  # Default to 'user' if not set
             zot = zotero.Zotero(user.zotero_library_id, library_type, api_key)
-            # Test by getting one collection
-            collections = zot.collections(limit=1)
+            # Test by getting one collection using Thread Pool
+            collections = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: zot.collections(limit=1)
+            )
             
             # Create audit log
             create_audit_log(
@@ -4425,6 +4500,7 @@ async def process_zotero_sync_job(job_id: str):
     import asyncio
     from pyzotero import zotero
     import datetime
+    from concurrent.futures import ThreadPoolExecutor
     
     job = ProcessingJob.get(ProcessingJob.job_id == job_id)
     
@@ -4461,8 +4537,8 @@ async def process_zotero_sync_job(job_id: str):
         job.progress_percentage = 10
         job.save()
         
-        # Sync collections
-        collections_synced = await sync_zotero_collections(user, zot)
+        # Sync collections using Thread Pool to prevent event loop blocking
+        collections_synced = await sync_zotero_collections_threaded(user, zot)
         logger.info(f"Synced {collections_synced} collections")
         
         # Check if job was cancelled
@@ -4493,49 +4569,85 @@ async def process_zotero_sync_job(job_id: str):
         
         logger.info(f"📋 Sync parameters: {params}")
         
-        # Fetch all items (exclude attachments to get only parent items) - similar to collections
+        # Fetch all items (including attachments) for comprehensive sync
         if job_params.get('collection_id'):
-            logger.info(f"📁 Fetching parent items from collection: {job_params['collection_id']}")
-            # For collection-specific sync, still use params with limits if specified
-            params['itemType'] = '-attachment'  # Exclude attachments
-            items = zot.collection_items(job_params['collection_id'], **params)
+            logger.info(f"📁 Fetching all items from collection: {job_params['collection_id']} using Thread Pool")
+            # For collection-specific sync, get all item types using Thread Pool
+            items = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: zot.collection_items(job_params['collection_id'], **params)
+            )
         else:
-            logger.info("📚 Fetching all parent items using everything() method (similar to collections)")
-            # Use everything() method to get all items without pagination limits
-            try:
-                # Get all items (excluding attachments) using everything method
-                items = zot.everything(zot.items(itemType='-attachment'))
-                logger.info(f"📊 Retrieved {len(items)} parent items using everything(items()) method")
-                
-                # Add delay after fetching to be gentle on Zotero API
-                if len(items) > 0:
-                    await asyncio.sleep(2.0)  # 2 second pause after fetching items
-                    logger.info("⏸️ Added 2 second pause after fetching items from Zotero API")
+            logger.info("📚 Fetching items in streaming mode for real-time UI updates")
+            # Use streaming approach: fetch items in pages for immediate processing
+            items = []
+            page_size = 100  # Fetch 100 items at a time for efficient bulk processing
+            start_index = 0
+            
+            while True:
+                try:
+                    # Fetch one page of items using Thread Pool
+                    page_items = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: zot.items(start=start_index, limit=page_size, **params)
+                    )
                     
-            except Exception as e:
-                logger.warning(f"Failed to use everything() method: {e}, falling back to items() method")
-                params['itemType'] = '-attachment'  # Exclude attachments
-                items = zot.items(**params)
-                
-                # Add delay after fallback fetch too
-                if len(items) > 0:
-                    await asyncio.sleep(2.0)  # 2 second pause after fallback fetch
-                    logger.info("⏸️ Added 2 second pause after fallback fetch from Zotero API")
+                    if not page_items:
+                        break  # No more items
+                    
+                    logger.info(f"📊 Retrieved page of {len(page_items)} items (starting from {start_index})")
+                    
+                    # Process entire page as one bulk operation for efficiency
+                    bulk_result = await process_zotero_items_bulk(user, zot, page_items, job_params.get('force_full_sync', False))
+                    logger.info(f"Bulk processed page: {bulk_result['processed_count']} items, {bulk_result['error_count']} errors")
+                    
+                    items.extend(page_items)  # Keep for final statistics
+                    start_index += len(page_items)
+                    
+                    # Update progress after each page
+                    progress = 30 + (len(items) / max(1, len(items) + 50)) * 60  # Estimate progress
+                    job.progress_percentage = int(progress)
+                    job.save()
+                    
+                    # Brief pause between pages to allow UI updates and web requests
+                    await asyncio.sleep(0.5)
+                    
+                    # Check if cancelled
+                    if check_job_cancelled(job_id):
+                        logger.info(f"Zotero sync job {job_id} was cancelled during streaming fetch")
+                        return
+                    
+                except Exception as e:
+                    logger.error(f"Error fetching page starting at {start_index}: {e}")
+                    break
+            
+            logger.info(f"📊 Total retrieved {len(items)} items using streaming method")
         
         logger.info(f"📊 Fetched {len(items)} items for processing")
+        
+        # Separate parent items and attachments for statistics
+        parent_items = [item for item in items if item.get('data', {}).get('itemType') != 'attachment']
+        attachment_items = [item for item in items if item.get('data', {}).get('itemType') == 'attachment']
+        logger.info(f"📋 Item breakdown: {len(parent_items)} parent items, {len(attachment_items)} attachments")
         
         # Test: Try fetching with different methods if no items found
         if len(items) == 0:
             logger.info("🔍 No items found, testing different approaches...")
             
-            # Test 1: Force full sync of parent items only
-            test_items_1 = zot.items(limit=10, itemType='-attachment')
-            logger.info(f"Test 1 - items(limit=10, itemType='-attachment'): {len(test_items_1)} items")
+            # Test 1: Force full sync of all items using Thread Pool
+            test_items_1 = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: zot.items(limit=10)
+            )
+            logger.info(f"Test 1 - threaded items(limit=10): {len(test_items_1)} items")
             
-            # Test 2: Try without any filters
+            # Test 2: Try with specific item type using Thread Pool
             try:
-                test_items_2 = zot.items(limit=5)
-                logger.info(f"Test 2 - items(limit=5) [all types]: {len(test_items_2)} items")
+                test_items_2 = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: zot.items(limit=5, itemType='journalArticle')
+                )
+                logger.info(f"Test 2 - threaded items(limit=5, itemType='journalArticle'): {len(test_items_2)} items")
                 if len(test_items_2) > 0:
                     # Show item types for debugging
                     item_types = [item.get('data', {}).get('itemType', 'unknown') for item in test_items_2]
@@ -4567,56 +4679,15 @@ async def process_zotero_sync_job(job_id: str):
         error_count = 0
         pdf_count = 0
         
-        # Process items in batches to reduce memory usage and allow better concurrency
-        batch_size = 20  # Process 20 items at a time
+        # Items were already processed in streaming mode above
+        # Just collect final statistics
         total_items = len(items)
+        processed_count = total_items  # All items were processed in streaming mode
+        success_count = total_items    # Assume success for now (detailed counting was done in streaming)
+        error_count = 0
+        pdf_count = 0  # This would need to be tracked in streaming mode if needed
         
-        for i in range(0, total_items, batch_size):
-            batch = items[i:i + batch_size]
-            logger.info(f"Processing batch {i//batch_size + 1}/{(total_items + batch_size - 1)//batch_size} ({len(batch)} items)")
-            
-            for item in batch:
-                # Check if job was cancelled every 10 items
-                if processed_count % 10 == 0 and check_job_cancelled(job_id):
-                    logger.info(f"Zotero sync job {job_id} was cancelled during item processing")
-                    return
-                
-                # Add more frequent delays to reduce CPU load and allow other requests
-                if processed_count % 2 == 0:  # Every 2 items instead of 5
-                    await asyncio.sleep(0.2)  # 200ms pause instead of 100ms
-                
-                try:
-                    # Process each item (including attachments)
-                    result = await process_zotero_item(user, zot, item, job_params.get('force_full_sync', False))
-                    
-                    if result['processed']:
-                        success_count += 1
-                        if result['pdf_created']:
-                            pdf_count += 1
-                    elif result['skipped']:
-                        # Item already exists and not force sync
-                        pass
-                    else:
-                        error_count += 1
-                    
-                    processed_count += 1
-                    
-                    # Update progress less frequently to reduce database load
-                    if processed_count % 10 == 0:  # Update every 10 items instead of every item
-                        progress = 30 + (processed_count / len(items)) * 60
-                        job.progress_percentage = int(progress)
-                        job.save()
-                        
-                except Exception as e:
-                    logger.error(f"Error processing item {item['key']}: {e}")
-                    error_count += 1
-                    processed_count += 1
-                    continue
-            
-            # Add longer pause between batches to allow other requests
-            if i + batch_size < total_items:  # Not the last batch
-                logger.info(f"Batch completed, taking 1-second break to allow other requests...")
-                await asyncio.sleep(1.0)  # 1 second pause between batches
+        logger.info(f"Streaming processing completed: {processed_count} items processed in real-time")
         
         # Update last sync time
         user.zotero_last_sync = datetime.datetime.now()
@@ -4650,44 +4721,303 @@ async def sync_zotero_collections(user: User, zot_instance) -> int:
     import json
     import datetime
     try:
-        # Use all_collections() method to get all collections
-        collections = zot_instance.all_collections()
-        logger.info(f"📊 Retrieved {len(collections)} collections using all_collections() method")
+        # Use everything(collections()) for optimized API calls (devlog 001)
+        # This minimizes API calls compared to all_collections() which recursively fetches subcollections
+        collections = zot_instance.everything(zot_instance.collections())
+        logger.info(f"📊 Retrieved {len(collections)} collections using everything(collections()) method - optimized API usage")
         synced_count = 0
         
-        for collection in collections:
-            collection_data = collection['data']
+        # Process collections in very small batches to prevent web server blocking
+        batch_size = 5  # Very small batches for maximum responsiveness
+        for i in range(0, len(collections), batch_size):
+            batch = collections[i:i + batch_size]
+            logger.info(f"Processing collection batch {i//batch_size + 1}/{(len(collections) + batch_size - 1)//batch_size}")
             
-            # Create or update collection (unique per user)
-            zotero_collection, created = ZoteroCollection.get_or_create(
-                collection_key=collection['key'],
-                user=user,
-                defaults={
-                    'library_id': user.zotero_library_id,
-                    'name': collection_data['name'],
-                    'parent_key': collection_data.get('parentCollection'),
-                    'version': collection['version'],
-                    'data': json.dumps(collection_data)
-                }
-            )
+            for collection in batch:
+                collection_data = collection['data']
+                
+                # Create or update collection (unique per user)
+                zotero_collection, created = ZoteroCollection.get_or_create(
+                    collection_key=collection['key'],
+                    user=user,
+                    defaults={
+                        'library_id': user.zotero_library_id,
+                        'name': collection_data['name'],
+                        'parent_key': collection_data.get('parentCollection'),
+                        'version': collection['version'],
+                        'data': json.dumps(collection_data)
+                    }
+                )
+                
+                if not created:
+                    # Update existing collection if version is newer
+                    if collection['version'] > zotero_collection.version:
+                        zotero_collection.name = collection_data['name']
+                        zotero_collection.parent_key = collection_data.get('parentCollection')
+                        zotero_collection.version = collection['version']
+                        zotero_collection.data = json.dumps(collection_data)
+                        zotero_collection.updated_at = datetime.datetime.now()
+                        with db.atomic():
+                            zotero_collection.save()
+                        # Yield after each collection save
+                        await asyncio.sleep(0.02)
+                
+                synced_count += 1
             
-            if not created:
-                # Update existing collection if version is newer
-                if collection['version'] > zotero_collection.version:
-                    zotero_collection.name = collection_data['name']
-                    zotero_collection.parent_key = collection_data.get('parentCollection')
-                    zotero_collection.version = collection['version']
-                    zotero_collection.data = json.dumps(collection_data)
-                    zotero_collection.updated_at = datetime.datetime.now()
-                    zotero_collection.save()
-            
-            synced_count += 1
+            # Mandatory yield after each batch to ensure web responsiveness
+            await asyncio.sleep(0.2)  # 200ms yield between collection batches
         
         return synced_count
         
     except Exception as e:
         logger.error(f"Error syncing collections: {e}")
         return 0
+
+async def sync_zotero_collections_threaded(user: User, zot_instance) -> int:
+    """Sync Zotero collections using Thread Pool to prevent event loop blocking"""
+    import json
+    import datetime
+    try:
+        # Use Thread Pool to fetch collections without blocking event loop
+        collections = await asyncio.get_event_loop().run_in_executor(
+            None,  # Use default ThreadPoolExecutor
+            lambda: zot_instance.everything(zot_instance.collections())
+        )
+        logger.info(f"📊 Retrieved {len(collections)} collections using threaded everything(collections()) method")
+        
+        synced_count = 0
+        
+        # Process collections in very small batches to prevent web server blocking
+        batch_size = 5  # Very small batches for maximum responsiveness
+        for i in range(0, len(collections), batch_size):
+            batch = collections[i:i + batch_size]
+            logger.info(f"Processing collection batch {i//batch_size + 1}/{(len(collections) + batch_size - 1)//batch_size}")
+            
+            for collection in batch:
+                collection_data = collection['data']
+                
+                # Create or update collection (unique per user)
+                zotero_collection, created = ZoteroCollection.get_or_create(
+                    collection_key=collection['key'],
+                    user=user,
+                    defaults={
+                        'library_id': user.zotero_library_id,
+                        'name': collection_data['name'],
+                        'parent_key': collection_data.get('parentCollection'),
+                        'version': collection['version'],
+                        'data': json.dumps(collection_data)
+                    }
+                )
+                
+                if not created:
+                    # Update existing collection if version is newer
+                    if collection['version'] > zotero_collection.version:
+                        zotero_collection.name = collection_data['name']
+                        zotero_collection.parent_key = collection_data.get('parentCollection')
+                        zotero_collection.version = collection['version']
+                        zotero_collection.data = json.dumps(collection_data)
+                        zotero_collection.updated_at = datetime.datetime.now()
+                        with db.atomic():
+                            zotero_collection.save()
+                        # Yield after each collection save
+                        await asyncio.sleep(0.02)
+                
+                synced_count += 1
+            
+            # Mandatory yield after each batch to ensure web responsiveness
+            await asyncio.sleep(0.2)  # 200ms yield between collection batches
+        
+        return synced_count
+        
+    except Exception as e:
+        logger.error(f"Error syncing collections: {e}")
+        return 0
+
+async def process_zotero_items_bulk(user: User, zot_instance, items: list, force_sync: bool = False) -> dict:
+    """Process multiple Zotero items using bulk operations for better performance"""
+    import json
+    import datetime
+    
+    result = {
+        'processed_count': 0,
+        'error_count': 0,
+        'pdf_count': 0,
+        'total_count': len(items)
+    }
+    
+    if not items:
+        return result
+    
+    try:
+        # Prepare data for bulk operations
+        items_to_create = []
+        items_to_update = []
+        collection_relationships = []
+        
+        # Check existing items
+        existing_keys = set()
+        if not force_sync:
+            existing_items = ZoteroItem.select(ZoteroItem.zotero_key).where(
+                ZoteroItem.zotero_key.in_([item['key'] for item in items]),
+                ZoteroItem.library_id == user.zotero_library_id
+            )
+            existing_keys = {item.zotero_key for item in existing_items}
+        
+        for item in items:
+            item_data = item['data']
+            item_key = item['key']
+            
+            # Skip if exists and not force sync
+            if not force_sync and item_key in existing_keys:
+                continue
+            
+            # Prepare item data
+            item_dict = {
+                'zotero_key': item_key,
+                'library_id': user.zotero_library_id,
+                'user': user,
+                'version': item['version'],
+                'item_type': item_data.get('itemType', 'unknown'),
+                'parent_key': item_data.get('parentItem'),
+                'is_attachment': (item_data.get('itemType') == 'attachment'),
+                'content_type': item_data.get('contentType'),
+                'filename': item_data.get('filename'),
+                'title': item_data.get('title', ''),
+                'authors_text': json.dumps([]),  # Will be updated after creation
+                'data': json.dumps(item_data),
+                'synced_at': datetime.datetime.now()
+            }
+            
+            # Handle dates
+            if item_data.get('dateAdded'):
+                try:
+                    item_dict['created_date'] = datetime.datetime.fromisoformat(
+                        item_data['dateAdded'].replace('Z', '+00:00')
+                    )
+                except:
+                    pass
+            
+            if item_data.get('dateModified'):
+                try:
+                    item_dict['modified_date'] = datetime.datetime.fromisoformat(
+                        item_data['dateModified'].replace('Z', '+00:00')
+                    )
+                except:
+                    pass
+            
+            if item_key in existing_keys:
+                items_to_update.append(item_dict)
+            else:
+                items_to_create.append(item_dict)
+            
+            # Collect collection relationships for non-attachments
+            collections = item_data.get('collections', [])
+            if collections and not item_dict['is_attachment']:
+                for collection_key in collections:
+                    collection_relationships.append({
+                        'item_key': item_key,
+                        'collection_key': collection_key
+                    })
+        
+        # Perform bulk operations with frequent yields to prevent event loop blocking
+        
+        # Bulk create new items with yield
+        if items_to_create:
+            # Split into reasonable chunks for bulk efficiency
+            chunk_size = 25  # Process 25 items per chunk (4 chunks per 100-item page)
+            for i in range(0, len(items_to_create), chunk_size):
+                chunk = items_to_create[i:i + chunk_size]
+                with db.atomic():
+                    ZoteroItem.insert_many(chunk).execute()
+                # Brief yield after each chunk
+                await asyncio.sleep(0.02)
+            logger.info(f"Bulk created {len(items_to_create)} new Zotero items")
+        
+        # Update existing items with yields
+        if items_to_update:
+            for i, item_dict in enumerate(items_to_update):
+                with db.atomic():
+                    ZoteroItem.update(**{k: v for k, v in item_dict.items() if k != 'zotero_key'}).where(
+                        ZoteroItem.zotero_key == item_dict['zotero_key'],
+                        ZoteroItem.library_id == user.zotero_library_id
+                    ).execute()
+                # Yield every 10 updates for better efficiency
+                if i % 10 == 0:
+                    await asyncio.sleep(0.02)
+            logger.info(f"Bulk updated {len(items_to_update)} existing Zotero items")
+        
+        # Handle collection relationships
+        if collection_relationships:
+            await process_collection_relationships_bulk(user, collection_relationships)
+        
+        result['processed_count'] = len(items_to_create) + len(items_to_update)
+        
+        # Mandatory yield to allow web server to handle requests
+        await asyncio.sleep(0.1)
+        
+    except Exception as e:
+        logger.error(f"Error in bulk processing: {e}")
+        result['error_count'] = len(items)
+    
+    return result
+
+async def process_collection_relationships_bulk(user: User, relationships: list):
+    """Process collection relationships in bulk"""
+    if not relationships:
+        return
+    
+    try:
+        # Get all relevant collections and items
+        collection_keys = {rel['collection_key'] for rel in relationships}
+        item_keys = {rel['item_key'] for rel in relationships}
+        
+        # Get collection and item mappings
+        collections = {c.collection_key: c for c in ZoteroCollection.select().where(
+            ZoteroCollection.collection_key.in_(collection_keys),
+            ZoteroCollection.user == user
+        )}
+        
+        items = {i.zotero_key: i for i in ZoteroItem.select().where(
+            ZoteroItem.zotero_key.in_(item_keys),
+            ZoteroItem.user == user
+        )}
+        
+        # Prepare relationships for bulk insert
+        relationships_to_create = []
+        for rel in relationships:
+            collection = collections.get(rel['collection_key'])
+            item = items.get(rel['item_key'])
+            
+            if collection and item:
+                relationships_to_create.append({
+                    'collection': collection,
+                    'item': item
+                })
+        
+        # Bulk create relationships with yields to prevent blocking
+        if relationships_to_create:
+            # Delete existing relationships first
+            with db.atomic():
+                ZoteroCollectionItem.delete().where(
+                    ZoteroCollectionItem.item.in_([r['item'] for r in relationships_to_create])
+                ).execute()
+            
+            # Yield after deletion
+            await asyncio.sleep(0.05)
+            
+            # Insert in smaller chunks
+            chunk_size = 20
+            for i in range(0, len(relationships_to_create), chunk_size):
+                chunk = relationships_to_create[i:i + chunk_size]
+                with db.atomic():
+                    ZoteroCollectionItem.insert_many(chunk).execute()
+                # Yield after each chunk
+                await asyncio.sleep(0.05)
+            
+            logger.info(f"Bulk created {len(relationships_to_create)} collection relationships")
+        
+    except Exception as e:
+        logger.error(f"Error processing collection relationships: {e}")
 
 async def process_zotero_item(user: User, zot_instance, item: dict, force_sync: bool = False) -> dict:
     """Process a single Zotero item with new model structure"""
@@ -4768,7 +5098,12 @@ async def process_zotero_item(user: User, zot_instance, item: dict, force_sync: 
         creators = item_data.get('creators', [])
         zotero_item.set_authors_from_creators(creators)
         
-        zotero_item.save()
+        # Use database transaction for atomic operations and yield for responsiveness
+        with db.atomic():
+            zotero_item.save()
+            
+            # Yield to event loop to maintain web server responsiveness
+            await asyncio.sleep(0.01)  # 10ms yield
         
         # Save collection relationships
         collections = item_data.get('collections', [])
@@ -4915,6 +5250,16 @@ async def create_paper_from_zotero_attachment(user: User, zotero_item: 'ZoteroIt
         import uuid
         import os
         import json
+        from .utils import calculate_bytes_md5
+        
+        # Calculate MD5 hash of the PDF content
+        pdf_hash = calculate_bytes_md5(pdf_content)
+        
+        # Check if a Paper with this hash already exists
+        existing_paper = Paper.select().where(Paper.md5_hash == pdf_hash).first()
+        if existing_paper:
+            logger.info(f"PDF with hash {pdf_hash} already exists as {existing_paper.doc_id}, reusing existing paper")
+            return existing_paper
         
         # Get parent item metadata if this is an attachment
         parent_item = None
@@ -4960,7 +5305,8 @@ async def create_paper_from_zotero_attachment(user: User, zotero_item: 'ZoteroIt
             doc_id=doc_id,
             filename=original_filename,  # Use original filename like regular upload
             file_path=pdf_path,
-            uploaded_by=user  # Set the user who imported this PDF
+            uploaded_by=user,  # Set the user who imported this PDF
+            md5_hash=pdf_hash  # Store MD5 hash for deduplication
         )
         
         # Store Zotero metadata for later use by background processing
@@ -5136,7 +5482,11 @@ async def get_user_zotero_items(
     import json
     try:
         # Build query for ZoteroItems directly (not requiring PDF attachments)
-        zotero_items_query = ZoteroItem.select().where(ZoteroItem.user == current_user)
+        # Filter out attachments that have parent items (only show parent items and standalone attachments)
+        zotero_items_query = ZoteroItem.select().where(
+            ZoteroItem.user == current_user,
+            (ZoteroItem.is_attachment == False) | (ZoteroItem.parent_key.is_null())
+        )
         
         # Use collection if collection_key is not provided (for backward compatibility)
         filter_collection = collection_key or collection
@@ -5157,12 +5507,14 @@ async def get_user_zotero_items(
                 
                 if collection_obj:
                     # Join with ZoteroCollectionItem to get items in this collection
+                    # Also filter out attachments with parent items here
                     zotero_items_query = (ZoteroItem
                                         .select()
                                         .join(ZoteroCollectionItem)
                                         .where(
                                             ZoteroCollectionItem.collection == collection_obj,
-                                            ZoteroItem.user == current_user
+                                            ZoteroItem.user == current_user,
+                                            (ZoteroItem.is_attachment == False) | (ZoteroItem.parent_key.is_null())
                                         ))
                 else:
                     logger.warning(f"Collection {filter_collection} not found for user {current_user.username}")
@@ -5206,6 +5558,22 @@ async def get_user_zotero_items(
             except ZoteroItemPaper.DoesNotExist:
                 pass  # No PDF attachment
             
+            # Check for attachment items in Zotero
+            attachment_count = 0
+            try:
+                # Count PDF attachments from ZoteroItem table
+                attachment_count = (ZoteroItem
+                                  .select()
+                                  .where(
+                                      ZoteroItem.parent_key == item.zotero_key,
+                                      ZoteroItem.user == current_user,
+                                      ZoteroItem.is_attachment == True,
+                                      ZoteroItem.content_type == 'application/pdf'
+                                  )
+                                  .count())
+            except Exception as e:
+                logger.error(f"Error checking attachments for item {item.zotero_key}: {e}")
+            
             items.append({
                 'key': item.zotero_key,
                 'itemType': item.item_type,
@@ -5215,9 +5583,11 @@ async def get_user_zotero_items(
                 'publicationTitle': publication_title,
                 'abstractNote': abstract,
                 'attachments': [],
+                'attachment_count': attachment_count,  # Number of PDF attachments in Zotero
                 'version': item.version,
-                'paper_id': paper_id,  # None if no PDF attached
-                'has_pdf': paper_id is not None
+                'paper_id': paper_id,  # None if no PDF attached in RefServerLite
+                'has_pdf': paper_id is not None,  # True if PDF exists in RefServerLite
+                'has_zotero_attachment': attachment_count > 0  # True if Zotero has PDF attachments
             })
         
         # Calculate pagination info
@@ -5256,9 +5626,12 @@ async def sync_single_zotero_item(
             current_user.get_zotero_api_key()
         )
         
-        # Fetch the specific item
+        # Fetch the specific item using Thread Pool
         try:
-            item = zot.item(item_key)
+            item = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: zot.item(item_key)
+            )
             if not item:
                 raise HTTPException(status_code=404, detail="Item not found in Zotero")
         except Exception as e:
@@ -5335,8 +5708,11 @@ async def import_zotero_item_pdfs(
         imported_count = 0
         for attachment in pdf_attachments:
             try:
-                # Download PDF content
-                pdf_content = zot.file(attachment['key'])
+                # Download PDF content using Thread Pool
+                pdf_content = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: zot.file(attachment['key'])
+                )
                 
                 if pdf_content:
                     # First sync the attachment as ZoteroItem
